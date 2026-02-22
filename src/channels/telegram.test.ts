@@ -34,6 +34,7 @@ vi.mock('grammy', () => ({
     api = {
       sendMessage: vi.fn().mockResolvedValue(undefined),
       sendChatAction: vi.fn().mockResolvedValue(undefined),
+      setMyCommands: vi.fn().mockResolvedValue(undefined),
     };
 
     constructor(token: string) {
@@ -746,6 +747,7 @@ describe('TelegramChannel', () => {
         2,
         '100200300',
         '*Broken <html>*',
+        {},
       );
     });
 

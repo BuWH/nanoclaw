@@ -317,18 +317,14 @@ describe('refresh_groups authorization', () => {
 // --- restart authorization ---
 
 describe('restart authorization', () => {
-  it('main group can trigger restart', async () => {
-    let restarted = false;
-    deps.restart = async () => { restarted = true; };
-    await processTaskIpc({ type: 'restart' }, 'main', true, deps);
-    expect(restarted).toBe(true);
+  it('main group returns restart signal', async () => {
+    const result = await processTaskIpc({ type: 'restart' }, 'main', true, deps);
+    expect(result).toBe('restart');
   });
 
-  it('non-main group cannot trigger restart', async () => {
-    let restarted = false;
-    deps.restart = async () => { restarted = true; };
-    await processTaskIpc({ type: 'restart' }, 'other-group', false, deps);
-    expect(restarted).toBe(false);
+  it('non-main group does not return restart signal', async () => {
+    const result = await processTaskIpc({ type: 'restart' }, 'other-group', false, deps);
+    expect(result).toBeUndefined();
   });
 });
 

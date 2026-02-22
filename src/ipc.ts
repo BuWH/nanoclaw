@@ -136,8 +136,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
-              await processTaskIpc(data, sourceGroup, isMain, deps);
+              const result = await processTaskIpc(data, sourceGroup, isMain, deps);
               fs.unlinkSync(filePath);
+              // Execute restart AFTER the file is deleted to prevent restart loops
+              if (result === 'restart') {
+                await deps.restart();
+                return; // Process is exiting
+              }
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
@@ -164,6 +169,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
   logger.info('IPC watcher started (per-group namespaces)');
 }
 
+/**
+ * Process a single IPC task.
+ * Returns 'restart' when a restart was requested so the caller can clean up
+ * the IPC file before shutting down (otherwise the file persists across
+ * restarts and creates an infinite restart loop).
+ */
 export async function processTaskIpc(
   data: {
     type: string;
@@ -186,7 +197,7 @@ export async function processTaskIpc(
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
   deps: IpcDeps,
-): Promise<void> {
+): Promise<'restart' | void> {
   const registeredGroups = deps.registeredGroups();
 
   switch (data.type) {
@@ -387,10 +398,12 @@ export async function processTaskIpc(
       break;
 
     case 'restart':
-      // Only main group can trigger a restart
+      // Only main group can trigger a restart.
+      // Return 'restart' so the caller can delete the IPC file first,
+      // preventing an infinite restart loop.
       if (isMain) {
         logger.info({ sourceGroup }, 'Restart requested via IPC');
-        await deps.restart();
+        return 'restart';
       } else {
         logger.warn(
           { sourceGroup },
