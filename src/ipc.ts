@@ -27,6 +27,7 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
+  restart: () => Promise<void>;
 }
 
 let ipcWatcherRunning = false;
@@ -381,6 +382,19 @@ export async function processTaskIpc(
         logger.warn(
           { data },
           'Invalid register_group request - missing required fields',
+        );
+      }
+      break;
+
+    case 'restart':
+      // Only main group can trigger a restart
+      if (isMain) {
+        logger.info({ sourceGroup }, 'Restart requested via IPC');
+        await deps.restart();
+      } else {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized restart attempt blocked',
         );
       }
       break;

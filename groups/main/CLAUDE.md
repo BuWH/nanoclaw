@@ -59,6 +59,7 @@ Keep messages clean and readable for WhatsApp.
 
 - 每次进行信息查询（天气、新闻、数据等）时，回复中要注明数据来源（网站名称或 URL）
 - 尽量用中文回复
+- 触发服务器重启（restart_server）前，必须先得到用户的明确确认
 
 ---
 

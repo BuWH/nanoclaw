@@ -61,6 +61,7 @@ beforeEach(() => {
     syncGroupMetadata: async () => {},
     getAvailableGroups: () => [],
     writeGroupsSnapshot: () => {},
+    restart: async () => {},
   };
 });
 
@@ -310,6 +311,24 @@ describe('refresh_groups authorization', () => {
     // This should be silently blocked (no crash, no effect)
     await processTaskIpc({ type: 'refresh_groups' }, 'other-group', false, deps);
     // If we got here without error, the auth gate worked
+  });
+});
+
+// --- restart authorization ---
+
+describe('restart authorization', () => {
+  it('main group can trigger restart', async () => {
+    let restarted = false;
+    deps.restart = async () => { restarted = true; };
+    await processTaskIpc({ type: 'restart' }, 'main', true, deps);
+    expect(restarted).toBe(true);
+  });
+
+  it('non-main group cannot trigger restart', async () => {
+    let restarted = false;
+    deps.restart = async () => { restarted = true; };
+    await processTaskIpc({ type: 'restart' }, 'other-group', false, deps);
+    expect(restarted).toBe(false);
   });
 });
 

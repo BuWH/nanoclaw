@@ -441,7 +441,10 @@ async function main(): Promise<void> {
   }
 
   if (TELEGRAM_BOT_TOKEN) {
-    const telegram = new TelegramChannel(TELEGRAM_BOT_TOKEN, channelOpts);
+    const telegram = new TelegramChannel(TELEGRAM_BOT_TOKEN, {
+      ...channelOpts,
+      onRestart: () => shutdown('restart'),
+    });
     channels.push(telegram);
     await telegram.connect();
 
@@ -474,6 +477,12 @@ async function main(): Promise<void> {
     syncGroupMetadata: (force) => whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    restart: async () => {
+      logger.info('Restart requested — shutting down for launchd to restart');
+      await queue.shutdown(10000);
+      for (const ch of channels) await ch.disconnect();
+      process.exit(0);
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

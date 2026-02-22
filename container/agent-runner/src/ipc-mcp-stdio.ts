@@ -258,6 +258,32 @@ server.tool(
 );
 
 server.tool(
+  'restart_server',
+  'Restart the NanoClaw server process. The process will shut down gracefully and launchd will restart it automatically. Main group only. IMPORTANT: You must get explicit user confirmation before calling this tool.',
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can restart the server.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'restart',
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: 'Restart requested. The server will shut down and launchd will restart it.' }],
+    };
+  },
+);
+
+server.tool(
   'register_group',
   `Register a new WhatsApp group so the agent can respond to messages there. Main group only.
 

@@ -11,7 +11,7 @@ import {
 
 /**
  * Convert agent output (WhatsApp-style formatting) to Telegram HTML.
- * Handles: *bold*, _italic_, ```code blocks```, `inline code`
+ * Handles: *bold*, **bold**, _italic_, ```code blocks```, `inline code`
  * Falls back gracefully — if conversion looks wrong, returns null.
  */
 export function toTelegramHtml(text: string): string {
@@ -32,17 +32,22 @@ export function toTelegramHtml(text: string): string {
     return `<code>${code}</code>`;
   });
 
-  // Step 4: Convert bold (*...*) — but not inside <pre>/<code> tags
-  // Only match *text* where text doesn't contain newlines and * isn't preceded/followed by space
+  // Step 4: Convert double-asterisk bold (**...**) first
   html = html.replace(
-    /(?<![<\w\/])(\*)(?!\s)([^*\n]+?)(?<!\s)\1(?![>\w])/g,
-    '<b>$2</b>',
+    /\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*/g,
+    '<b>$1</b>',
   );
 
-  // Step 5: Convert italic (_..._) — similar approach
+  // Step 5: Convert single-asterisk bold (*...*) — but not inside <pre>/<code> tags
   html = html.replace(
-    /(?<![<\w\/])(_)(?!\s)([^_\n]+?)(?<!\s)\1(?![>\w])/g,
-    '<i>$2</i>',
+    /(?<![<\w\/])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![>\w])/g,
+    '<b>$1</b>',
+  );
+
+  // Step 6: Convert italic (_..._) — similar approach
+  html = html.replace(
+    /(?<![<\w\/])_(?!\s)([^_\n]+?)(?<!\s)_(?![>\w])/g,
+    '<i>$1</i>',
   );
 
   return html;
@@ -52,6 +57,7 @@ export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  onRestart?: () => Promise<void>;
 }
 
 export class TelegramChannel implements Channel {
@@ -87,6 +93,27 @@ export class TelegramChannel implements Channel {
     // Command to check bot status
     this.bot.command('ping', (ctx) => {
       ctx.reply(`${ASSISTANT_NAME} is online.`);
+    });
+
+    // Command to restart the server
+    this.bot.command('restart', async (ctx) => {
+      if (!this.opts.onRestart) {
+        ctx.reply('Restart not supported.');
+        return;
+      }
+      await ctx.reply('Restarting server...');
+      logger.info({ chatId: ctx.chat.id, user: ctx.from?.first_name }, 'Restart triggered via /restart command');
+      // Small delay so the reply is sent before shutting down
+      setTimeout(() => this.opts.onRestart!(), 500);
+    });
+
+    // Set bot menu commands so they appear in Telegram's UI
+    this.bot.api.setMyCommands([
+      { command: 'restart', description: 'Restart the server' },
+      { command: 'ping', description: 'Check if the bot is online' },
+      { command: 'chatid', description: 'Get this chat\'s registration ID' },
+    ]).catch((err) => {
+      logger.warn({ err }, 'Failed to set bot commands menu');
     });
 
     this.bot.on('message:text', async (ctx) => {
