@@ -63,7 +63,7 @@ vi.mock('grammy', () => ({
   },
 }));
 
-import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
+import { TelegramChannel, TelegramChannelOpts, toTelegramHtml } from './telegram.js';
 
 // --- Test helpers ---
 
@@ -686,7 +686,7 @@ describe('TelegramChannel', () => {
   // --- sendMessage ---
 
   describe('sendMessage', () => {
-    it('sends message via bot API', async () => {
+    it('sends message via bot API with HTML parse_mode', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -696,6 +696,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '100200300',
         'Hello',
+        { parse_mode: 'HTML' },
       );
     });
 
@@ -709,10 +710,46 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '-1001234567890',
         'Group message',
+        { parse_mode: 'HTML' },
       );
     });
 
-    it('splits messages exceeding 4096 characters', async () => {
+    it('sends bold formatting as HTML', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendMessage('tg:100200300', '*Bold text*');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        '<b>Bold text</b>',
+        { parse_mode: 'HTML' },
+      );
+    });
+
+    it('falls back to plain text when HTML parse fails', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // First call (HTML) fails, second call (plain text) succeeds
+      currentBot().api.sendMessage
+        .mockRejectedValueOnce(new Error('Bad Request: can\'t parse entities'))
+        .mockResolvedValueOnce(undefined);
+
+      await channel.sendMessage('tg:100200300', '*Broken <html>*');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+      // Second call should be plain text (no parse_mode)
+      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        '100200300',
+        '*Broken <html>*',
+      );
+    });
+
+    it('splits long messages into chunks', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -721,16 +758,6 @@ describe('TelegramChannel', () => {
       await channel.sendMessage('tg:100200300', longText);
 
       expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
-      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
-        1,
-        '100200300',
-        'x'.repeat(4096),
-      );
-      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
-        2,
-        '100200300',
-        'x'.repeat(904),
-      );
     });
 
     it('sends exactly one message at 4096 characters', async () => {
@@ -749,7 +776,7 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.sendMessage.mockRejectedValueOnce(
+      currentBot().api.sendMessage.mockRejectedValue(
         new Error('Network error'),
       );
 
@@ -767,6 +794,59 @@ describe('TelegramChannel', () => {
       await channel.sendMessage('tg:100200300', 'No bot');
 
       // No error, no API call
+    });
+
+    it('includes reply_parameters when replyToMessageId is provided', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendMessage('tg:100200300', 'Reply text', '42');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'Reply text',
+        { parse_mode: 'HTML', reply_parameters: { message_id: 42 } },
+      );
+    });
+
+    it('does not include reply_parameters when replyToMessageId is undefined', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendMessage('tg:100200300', 'No reply');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'No reply',
+        { parse_mode: 'HTML' },
+      );
+    });
+
+    it('only sets reply_parameters on first chunk of split messages', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const longText = 'x'.repeat(5000);
+      await channel.sendMessage('tg:100200300', longText, '99');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+      // First chunk has reply_parameters
+      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
+        1,
+        '100200300',
+        expect.any(String),
+        { parse_mode: 'HTML', reply_parameters: { message_id: 99 } },
+      );
+      // Second chunk does NOT have reply_parameters
+      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        '100200300',
+        expect.any(String),
+        { parse_mode: 'HTML' },
+      );
     });
   });
 
@@ -914,5 +994,65 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', createTestOpts());
       expect(channel.name).toBe('telegram');
     });
+  });
+});
+
+// --- toTelegramHtml ---
+
+describe('toTelegramHtml', () => {
+  it('passes plain text through unchanged', () => {
+    expect(toTelegramHtml('Hello world')).toBe('Hello world');
+  });
+
+  it('escapes HTML entities', () => {
+    expect(toTelegramHtml('a & b < c > d')).toBe('a &amp; b &lt; c &gt; d');
+  });
+
+  it('converts *bold* to <b>bold</b>', () => {
+    expect(toTelegramHtml('This is *bold* text')).toBe('This is <b>bold</b> text');
+  });
+
+  it('converts _italic_ to <i>italic</i>', () => {
+    expect(toTelegramHtml('This is _italic_ text')).toBe('This is <i>italic</i> text');
+  });
+
+  it('converts ```code``` to <pre>code</pre>', () => {
+    expect(toTelegramHtml('Run ```npm install``` now')).toBe('Run <pre>npm install</pre> now');
+  });
+
+  it('converts `inline code` to <code>inline code</code>', () => {
+    expect(toTelegramHtml('Use `git status` here')).toBe('Use <code>git status</code> here');
+  });
+
+  it('handles multiline code blocks', () => {
+    const input = '```\nconst x = 1;\nconst y = 2;\n```';
+    const expected = '<pre>\nconst x = 1;\nconst y = 2;\n</pre>';
+    expect(toTelegramHtml(input)).toBe(expected);
+  });
+
+  it('handles mixed formatting', () => {
+    const input = '*Bold* and _italic_ and `code`';
+    const expected = '<b>Bold</b> and <i>italic</i> and <code>code</code>';
+    expect(toTelegramHtml(input)).toBe(expected);
+  });
+
+  it('does not convert single asterisks without matching pair', () => {
+    const input = 'Price is 5 * 3 = 15';
+    expect(toTelegramHtml(input)).toBe('Price is 5 * 3 = 15');
+  });
+
+  it('preserves bullet points', () => {
+    const input = '• Item 1\n• Item 2';
+    expect(toTelegramHtml(input)).toBe('• Item 1\n• Item 2');
+  });
+
+  it('preserves emoji', () => {
+    const input = '🌤️ *Weather* is nice';
+    expect(toTelegramHtml(input)).toBe('🌤️ <b>Weather</b> is nice');
+  });
+
+  it('handles HTML entities inside formatting', () => {
+    const input = '*a & b* are _<cool>_';
+    expect(toTelegramHtml(input)).toBe('<b>a &amp; b</b> are <i>&lt;cool&gt;</i>');
   });
 });

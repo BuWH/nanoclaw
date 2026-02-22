@@ -16,7 +16,7 @@ import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (jid: string, text: string, replyToMessageId?: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroupMetadata: (force: boolean) => Promise<void>;
@@ -86,9 +86,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       data.text,
                       data.sender,
                       sourceGroup,
+                      data.replyToMessageId,
                     );
                   } else {
-                    await deps.sendMessage(data.chatJid, data.text);
+                    await deps.sendMessage(data.chatJid, data.text, data.replyToMessageId);
                   }
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup, sender: data.sender },

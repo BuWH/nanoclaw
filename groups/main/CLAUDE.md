@@ -58,6 +58,7 @@ Keep messages clean and readable for WhatsApp.
 ## User Preferences
 
 - 每次进行信息查询（天气、新闻、数据等）时，回复中要注明数据来源（网站名称或 URL）
+- 尽量用中文回复
 
 ---
 

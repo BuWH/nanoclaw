@@ -34,6 +34,23 @@ function writeIpcFile(dir: string, data: object): string {
   return filename;
 }
 
+/**
+ * Read the last message ID from the reply context file.
+ * Written by the host when messages are sent to the container.
+ */
+function getReplyToMessageId(): string | undefined {
+  try {
+    const contextFile = path.join(IPC_DIR, 'reply_context.json');
+    if (fs.existsSync(contextFile)) {
+      const data = JSON.parse(fs.readFileSync(contextFile, 'utf-8'));
+      return data.lastMessageId || undefined;
+    }
+  } catch {
+    // Ignore errors reading context
+  }
+  return undefined;
+}
+
 const server = new McpServer({
   name: 'nanoclaw',
   version: '1.0.0',
@@ -47,12 +64,14 @@ server.tool(
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
   },
   async (args) => {
+    const replyToMessageId = getReplyToMessageId();
     const data: Record<string, string | undefined> = {
       type: 'message',
       chatJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
+      replyToMessageId,
       timestamp: new Date().toISOString(),
     };
 

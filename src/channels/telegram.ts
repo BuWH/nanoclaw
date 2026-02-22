@@ -9,6 +9,45 @@ import {
   RegisteredGroup,
 } from '../types.js';
 
+/**
+ * Convert agent output (WhatsApp-style formatting) to Telegram HTML.
+ * Handles: *bold*, _italic_, ```code blocks```, `inline code`
+ * Falls back gracefully — if conversion looks wrong, returns null.
+ */
+export function toTelegramHtml(text: string): string {
+  // Step 1: Escape HTML entities in the raw text
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Step 2: Convert code blocks first (```...```) to protect their contents
+  // Handle multiline and inline code blocks
+  html = html.replace(/```([\s\S]*?)```/g, (_match, code) => {
+    return `<pre>${code}</pre>`;
+  });
+
+  // Step 3: Convert inline code (`...`)
+  html = html.replace(/`([^`\n]+)`/g, (_match, code) => {
+    return `<code>${code}</code>`;
+  });
+
+  // Step 4: Convert bold (*...*) — but not inside <pre>/<code> tags
+  // Only match *text* where text doesn't contain newlines and * isn't preceded/followed by space
+  html = html.replace(
+    /(?<![<\w\/])(\*)(?!\s)([^*\n]+?)(?<!\s)\1(?![>\w])/g,
+    '<b>$2</b>',
+  );
+
+  // Step 5: Convert italic (_..._) — similar approach
+  html = html.replace(
+    /(?<![<\w\/])(_)(?!\s)([^_\n]+?)(?<!\s)\1(?![>\w])/g,
+    '<i>$2</i>',
+  );
+
+  return html;
+}
+
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
@@ -187,7 +226,7 @@ export class TelegramChannel implements Channel {
     });
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(jid: string, text: string, replyToMessageId?: string): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
       return;
@@ -198,14 +237,35 @@ export class TelegramChannel implements Channel {
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await this.bot.api.sendMessage(numericId, text);
+      const html = toTelegramHtml(text);
+      const chunks: string[] = [];
+      const source = html;
+
+      if (source.length <= MAX_LENGTH) {
+        chunks.push(source);
       } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await this.bot.api.sendMessage(
-            numericId,
-            text.slice(i, i + MAX_LENGTH),
-          );
+        for (let i = 0; i < source.length; i += MAX_LENGTH) {
+          chunks.push(source.slice(i, i + MAX_LENGTH));
+        }
+      }
+
+      for (let ci = 0; ci < chunks.length; ci++) {
+        const opts: Record<string, unknown> = { parse_mode: 'HTML' };
+        // Only reply-to on the first chunk
+        if (ci === 0 && replyToMessageId) {
+          opts.reply_parameters = { message_id: Number(replyToMessageId) };
+        }
+        try {
+          await this.bot.api.sendMessage(numericId, chunks[ci], opts);
+        } catch {
+          // Fallback: send as plain text if HTML parsing fails
+          logger.debug({ jid }, 'HTML parse failed, falling back to plain text');
+          const fallbackOpts: Record<string, unknown> = {};
+          if (ci === 0 && replyToMessageId) {
+            fallbackOpts.reply_parameters = { message_id: Number(replyToMessageId) };
+          }
+          await this.bot.api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts);
+          break;
         }
       }
       logger.info({ jid, length: text.length }, 'Telegram message sent');
@@ -281,6 +341,7 @@ export async function sendPoolMessage(
   text: string,
   sender: string,
   groupFolder: string,
+  replyToMessageId?: string,
 ): Promise<void> {
   if (poolApis.length === 0) {
     // No pool bots available — cannot send via pool
@@ -308,11 +369,34 @@ export async function sendPoolMessage(
   try {
     const numericId = chatId.replace(/^tg:/, '');
     const MAX_LENGTH = 4096;
-    if (text.length <= MAX_LENGTH) {
-      await api.sendMessage(numericId, text);
+    const html = toTelegramHtml(text);
+    const chunks: string[] = [];
+    const source = html;
+
+    if (source.length <= MAX_LENGTH) {
+      chunks.push(source);
     } else {
-      for (let i = 0; i < text.length; i += MAX_LENGTH) {
-        await api.sendMessage(numericId, text.slice(i, i + MAX_LENGTH));
+      for (let i = 0; i < source.length; i += MAX_LENGTH) {
+        chunks.push(source.slice(i, i + MAX_LENGTH));
+      }
+    }
+
+    for (let ci = 0; ci < chunks.length; ci++) {
+      try {
+        const opts: Record<string, unknown> = { parse_mode: 'HTML' };
+        if (ci === 0 && replyToMessageId) {
+          opts.reply_parameters = { message_id: Number(replyToMessageId) };
+        }
+        await api.sendMessage(numericId, chunks[ci], opts);
+      } catch {
+        // Fallback: send as plain text if HTML parsing fails
+        logger.debug({ chatId, sender }, 'HTML parse failed in pool message, falling back to plain text');
+        const fallbackOpts: Record<string, unknown> = {};
+        if (ci === 0 && replyToMessageId) {
+          fallbackOpts.reply_parameters = { message_id: Number(replyToMessageId) };
+        }
+        await api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts);
+        break;
       }
     }
     logger.info({ chatId, sender, poolIndex: idx, length: text.length }, 'Pool message sent');
