@@ -66,6 +66,7 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -92,16 +93,16 @@ export class TelegramChannel implements Channel {
 
     // Command to check bot status
     this.bot.command('ping', (ctx) => {
-      ctx.reply(`${ASSISTANT_NAME} is online.`);
+      ctx.reply(`${ASSISTANT_NAME} 在线中`);
     });
 
     // Command to restart the server
     this.bot.command('restart', async (ctx) => {
       if (!this.opts.onRestart) {
-        ctx.reply('Restart not supported.');
+        ctx.reply('不支持重启');
         return;
       }
-      await ctx.reply('Restarting server...');
+      await ctx.reply('正在重启服务器...');
       logger.info({ chatId: ctx.chat.id, user: ctx.from?.first_name }, 'Restart triggered via /restart command');
       // Small delay so the reply is sent before shutting down
       setTimeout(() => this.opts.onRestart!(), 500);
@@ -109,9 +110,9 @@ export class TelegramChannel implements Channel {
 
     // Set bot menu commands so they appear in Telegram's UI
     this.bot.api.setMyCommands([
-      { command: 'restart', description: 'Restart the server' },
-      { command: 'ping', description: 'Check if the bot is online' },
-      { command: 'chatid', description: 'Get this chat\'s registration ID' },
+      { command: 'restart', description: '重启服务器' },
+      { command: 'ping', description: '检查机器人是否在线' },
+      { command: 'chatid', description: '获取当前聊天的注册 ID' },
     ]).catch((err) => {
       logger.warn({ err }, 'Failed to set bot commands menu');
     });
@@ -310,6 +311,12 @@ export class TelegramChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    // Clear all typing intervals
+    for (const interval of this.typingIntervals.values()) {
+      clearInterval(interval);
+    }
+    this.typingIntervals.clear();
+
     if (this.bot) {
       this.bot.stop();
       this.bot = null;
@@ -318,13 +325,32 @@ export class TelegramChannel implements Channel {
   }
 
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
-    if (!this.bot || !isTyping) return;
-    try {
-      const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.sendChatAction(numericId, 'typing');
-    } catch (err) {
-      logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
+    if (!this.bot) return;
+
+    if (!isTyping) {
+      // Stop the repeating typing indicator
+      const existing = this.typingIntervals.get(jid);
+      if (existing) {
+        clearInterval(existing);
+        this.typingIntervals.delete(jid);
+      }
+      return;
     }
+
+    // Already typing for this chat — don't stack intervals
+    if (this.typingIntervals.has(jid)) return;
+
+    const numericId = jid.replace(/^tg:/, '');
+    const sendAction = () => {
+      this.bot?.api.sendChatAction(numericId, 'typing').catch((err) => {
+        logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
+      });
+    };
+
+    // Send immediately, then repeat every 4s (Telegram typing expires after 5s)
+    sendAction();
+    const interval = setInterval(sendAction, 4000);
+    this.typingIntervals.set(jid, interval);
   }
 }
 

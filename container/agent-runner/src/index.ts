@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
@@ -188,7 +189,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 // Secrets to strip from Bash tool subprocess environments.
 // These are needed by claude-code for API auth but should never
 // be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL'];
+const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'GITHUB_TOKEN'];
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -514,6 +515,27 @@ async function main(): Promise<void> {
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
   for (const [key, value] of Object.entries(containerInput.secrets || {})) {
     sdkEnv[key] = value;
+  }
+
+  // Configure git with GitHub token for HTTPS authentication.
+  // Uses a credential helper script that outputs the token on demand.
+  // The token itself is not stored in any file or env var visible to Bash.
+  const githubToken = containerInput.secrets?.GITHUB_TOKEN;
+  if (githubToken) {
+    try {
+      const credentialScript = '/tmp/.git-credential-helper';
+      fs.writeFileSync(credentialScript, [
+        '#!/bin/sh',
+        'cat > /dev/null',
+        `printf "protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=${githubToken}\\n"`,
+      ].join('\n'), { mode: 0o700 });
+      execSync('git config --global credential.helper "/tmp/.git-credential-helper"', { stdio: 'ignore' });
+      execSync('git config --global user.name "NanoClaw Agent"', { stdio: 'ignore' });
+      execSync('git config --global user.email "agent@nanoclaw.local"', { stdio: 'ignore' });
+      log('Git credential helper configured for GitHub HTTPS');
+    } catch (err) {
+      log(`Failed to configure git credentials: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));

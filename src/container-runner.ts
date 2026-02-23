@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -19,7 +20,7 @@ import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { CONTAINER_RUNTIME_BIN, readonlyMountArgs, stopContainer } from './container-runtime.js';
-import { validateAdditionalMounts } from './mount-security.js';
+import { loadMountAllowlist, validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -76,6 +77,31 @@ function buildVolumeMounts(
       containerPath: '/workspace/group',
       readonly: false,
     });
+
+    // Auto-mount allowed roots from the allowlist for main group
+    const allowlist = loadMountAllowlist();
+    if (allowlist) {
+      const homeDir = os.homedir();
+      for (const root of allowlist.allowedRoots) {
+        const expandedPath = root.path.startsWith('~/')
+          ? path.join(homeDir, root.path.slice(2))
+          : root.path === '~'
+            ? homeDir
+            : path.resolve(root.path);
+        if (fs.existsSync(expandedPath)) {
+          const mountName = path.basename(expandedPath);
+          mounts.push({
+            hostPath: expandedPath,
+            containerPath: `/workspace/extra/${mountName}`,
+            readonly: !root.allowReadWrite,
+          });
+          logger.info(
+            { hostPath: expandedPath, containerPath: `/workspace/extra/${mountName}`, readonly: !root.allowReadWrite },
+            'Auto-mounted allowlist root for main group',
+          );
+        }
+      }
+    }
   } else {
     // Other groups only get their own folder
     mounts.push({
@@ -183,7 +209,7 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_MODEL']);
+  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_MODEL', 'GITHUB_TOKEN']);
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {

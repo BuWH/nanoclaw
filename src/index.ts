@@ -37,7 +37,7 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -159,7 +159,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const lastMessageId = missedMessages[0].id;
 
   // Write reply context for the MCP server inside the container
-  const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
   fs.writeFileSync(
     path.join(groupIpcDir, 'reply_context.json'),
@@ -201,6 +201,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
+        await channel.setTyping?.(chatJid, false);
         await channel.sendMessage(chatJid, text, lastMessageId);
         outputSentToUser = true;
       }
@@ -388,8 +389,15 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
-            // Don't overwrite reply_context.json here — the original trigger
-            // message's reply context should remain intact while the agent processes.
+            // Update reply context to the first message of this new batch
+            // so the agent's response replies to the triggering message
+            const triggerMsgId = messagesToSend[0].id;
+            const groupIpcDir = resolveGroupIpcPath(group.folder);
+            fs.mkdirSync(groupIpcDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(groupIpcDir, 'reply_context.json'),
+              JSON.stringify({ lastMessageId: triggerMsgId }),
+            );
             // Show typing indicator while the container processes the piped message
             channel.setTyping?.(chatJid, true)?.catch((err) =>
               logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
@@ -489,6 +497,10 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text, replyToMessageId);
     },
+    setTyping: async (jid, isTyping) => {
+      const channel = findChannel(channels, jid);
+      if (channel?.setTyping) await channel.setTyping(jid, isTyping);
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroupMetadata: (force) => whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
@@ -507,6 +519,19 @@ async function main(): Promise<void> {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);
   });
+
+  // Notify main group that the server has started
+  const mainJid = Object.entries(registeredGroups).find(
+    ([, g]) => g.folder === MAIN_GROUP_FOLDER,
+  )?.[0];
+  if (mainJid) {
+    const mainChannel = findChannel(channels, mainJid);
+    if (mainChannel) {
+      mainChannel.sendMessage(mainJid, '服务已重启 ✅').catch((err) => {
+        logger.warn({ err }, 'Failed to send startup notification');
+      });
+    }
+  }
 }
 
 // Guard: only run when executed directly, not when imported by tests

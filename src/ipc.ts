@@ -18,6 +18,7 @@ import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, replyToMessageId?: string) => Promise<void>;
+  setTyping: (jid: string, isTyping: boolean) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroupMetadata: (force: boolean) => Promise<void>;
@@ -81,6 +82,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
+                  // Stop typing indicator before sending the message
+                  await deps.setTyping(data.chatJid, false);
                   // Route through pool bot if sender is specified and target is Telegram
                   if (data.sender && data.chatJid.startsWith('tg:')) {
                     await sendPoolMessage(
