@@ -79,7 +79,7 @@ export async function getBrowserContext(): Promise<BrowserContext> {
 
   const context = await chromium.launchPersistentContext(config.browserDataDir, {
     executablePath: config.chromePath,
-    headless: false,
+    headless: true,
     viewport: config.viewport,
     args: config.chromeArgs,
     ignoreDefaultArgs: config.chromeIgnoreDefaultArgs,

@@ -54,6 +54,10 @@ export const config = {
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-sync',
+    '--disable-session-crashed-bubble',
+    '--disable-infobars',
+    '--hide-crash-restore-bubble',
+    '--restore-last-session',
   ],
 
   // Args to ignore when launching Chrome

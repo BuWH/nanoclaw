@@ -189,7 +189,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 // Secrets to strip from Bash tool subprocess environments.
 // These are needed by claude-code for API auth but should never
 // be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'GITHUB_TOKEN'];
+const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'GITHUB_TOKEN', 'NOTION_API_KEY', 'TAVILY_API_KEY'];
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -429,12 +429,13 @@ async function runQuery(
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
         'Task', 'TaskOutput', 'TaskStop',
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__notion__*',
+        'mcp__tavily-search__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -450,6 +451,27 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(sdkEnv.NOTION_API_KEY ? {
+          notion: {
+            command: 'npx',
+            args: ['-y', '@notionhq/notion-mcp-server'],
+            env: {
+              OPENAPI_MCP_HEADERS: JSON.stringify({
+                Authorization: `Bearer ${sdkEnv.NOTION_API_KEY}`,
+                'Notion-Version': '2022-06-28',
+              }),
+            },
+          },
+        } : {}),
+        ...(sdkEnv.TAVILY_API_KEY ? {
+          'tavily-search': {
+            command: 'npx',
+            args: ['-y', 'tavily-mcp'],
+            env: {
+              TAVILY_API_KEY: sdkEnv.TAVILY_API_KEY,
+            },
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],

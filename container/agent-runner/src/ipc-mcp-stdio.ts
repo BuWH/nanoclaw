@@ -326,5 +326,114 @@ Use available_groups.json to find the JID for a group. The folder name should be
 );
 
 // Start the stdio transport
+// --- X Integration Tools (main group only) ---
+
+const X_RESULTS_DIR = path.join(IPC_DIR, 'x_results');
+
+async function waitForXResult(requestId: string, maxWait = 60000): Promise<{ success: boolean; message: string }> {
+  const resultFile = path.join(X_RESULTS_DIR, `${requestId}.json`);
+  const pollInterval = 1000;
+  let elapsed = 0;
+
+  while (elapsed < maxWait) {
+    if (fs.existsSync(resultFile)) {
+      try {
+        const result = JSON.parse(fs.readFileSync(resultFile, 'utf-8'));
+        fs.unlinkSync(resultFile);
+        return result;
+      } catch (err) {
+        return { success: false, message: `Failed to read result: ${err}` };
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+    elapsed += pollInterval;
+  }
+
+  return { success: false, message: 'Request timed out' };
+}
+
+if (isMain) {
+  server.tool(
+    'x_scrape_tweet',
+    `Scrape a tweet from X (Twitter). Extracts content, author, metrics (likes, reposts, views), and optionally replies. Main group only.
+Uses browser automation on the host machine to load the tweet page.`,
+    {
+      tweet_url: z.string().describe('The tweet URL (e.g., https://x.com/user/status/123)'),
+      include_replies: z.boolean().default(false).describe('Whether to also scrape replies'),
+      max_replies: z.number().default(10).describe('Maximum number of replies to scrape'),
+    },
+    async (args) => {
+      const requestId = `xscrape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      writeIpcFile(TASKS_DIR, {
+        type: 'x_scrape_tweet',
+        requestId,
+        tweetUrl: args.tweet_url,
+        includeReplies: args.include_replies,
+        maxReplies: args.max_replies,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const result = await waitForXResult(requestId, 90000);
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+        isError: !result.success,
+      };
+    },
+  );
+
+  server.tool(
+    'x_scrape_profile',
+    `Scrape a user profile and recent tweets from X (Twitter). Extracts bio, follower counts, and recent timeline posts. Main group only.
+Uses browser automation on the host machine.`,
+    {
+      username: z.string().describe('X username (with or without @)'),
+      max_tweets: z.number().default(10).describe('Maximum number of tweets to scrape from timeline'),
+    },
+    async (args) => {
+      const requestId = `xprofile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      writeIpcFile(TASKS_DIR, {
+        type: 'x_scrape_profile',
+        requestId,
+        username: args.username,
+        maxTweets: args.max_tweets,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const result = await waitForXResult(requestId, 90000);
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+        isError: !result.success,
+      };
+    },
+  );
+
+  server.tool(
+    'x_scrape_timeline',
+    `Scrape the authenticated user's home timeline from X (Twitter). Returns recent tweets from the Following feed. Main group only.
+Uses browser automation on the host machine.`,
+    {
+      max_tweets: z.number().default(20).describe('Maximum number of tweets to scrape from home timeline'),
+    },
+    async (args) => {
+      const requestId = `xtimeline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      writeIpcFile(TASKS_DIR, {
+        type: 'x_scrape_timeline',
+        requestId,
+        maxTweets: args.max_tweets,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const result = await waitForXResult(requestId, 120000);
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+        isError: !result.success,
+      };
+    },
+  );
+}
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
