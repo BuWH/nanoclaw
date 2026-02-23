@@ -62,6 +62,12 @@ Keep messages clean and readable for WhatsApp.
 - 触发服务器重启（restart_server）前，必须先得到用户的明确确认
 - 每次 git push 后，展示所推送的 commits 内容（commit message、改动文件等）
 
+## Notion
+
+- 默认页面：*Agent*（ID: `310af03d-f81a-8055-ab72-f70b791ca4f6`）
+- Notion 作为 wiki / library 使用，产出的报告、调研结果等内容要归档记录到 Notion 中
+- 在 Agent 页面下创建子页面来组织内容
+
 ---
 
 ## Admin Context

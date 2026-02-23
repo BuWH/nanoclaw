@@ -1,11 +1,14 @@
 #!/usr/bin/env npx tsx
 /**
- * X Integration - Scrape User Profile / Timeline
- * Extracts recent tweets from a user's profile page.
+ * X Integration - Scrape User Profile (API-based)
+ *
+ * Uses @the-convocation/twitter-scraper API instead of Playwright.
+ *
  * Usage: echo '{"username":"elonmusk","maxTweets":10}' | npx tsx scrape-profile.ts
  */
 
-import { getBrowserContext, runScript, config, ScriptResult } from '../lib/browser.js';
+import { createScraper } from '../lib/scraper.js';
+import { readInput, writeResult, type ScriptResult } from '../lib/browser.js';
 
 interface ProfileInput {
   username: string;
@@ -37,96 +40,79 @@ async function scrapeProfile(input: ProfileInput): Promise<ScriptResult> {
     return { success: false, message: 'Please provide a username' };
   }
 
-  // Strip @ if present
   const cleanUsername = username.replace(/^@/, '');
+  const scraper = await createScraper();
 
-  let context = null;
+  // Fetch profile
+  let profile;
   try {
-    context = await getBrowserContext();
-    const page = context.pages()[0] || await context.newPage();
-
-    await page.goto(`https://x.com/${cleanUsername}`, {
-      timeout: config.timeouts.navigation,
-      waitUntil: 'domcontentloaded',
-    });
-    await page.waitForTimeout(config.timeouts.pageLoad);
-
-    // Check if profile exists
-    const notFound = await page.locator('text=This account doesn').isVisible().catch(() => false);
-    const suspended = await page.locator('text=Account suspended').isVisible().catch(() => false);
-    if (notFound || suspended) {
+    profile = await scraper.getProfile(cleanUsername);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('not found') || msg.includes('suspended') || msg.includes('404')) {
       return { success: false, message: `Profile @${cleanUsername} not found or suspended` };
     }
+    throw err;
+  }
 
-    // Extract profile info
-    const displayName = await page.locator('[data-testid="UserName"]').first().innerText()
-      .then(t => t.split('\n')[0] || '')
-      .catch(() => '');
+  if (!profile || !profile.username) {
+    return { success: false, message: `Profile @${cleanUsername} not found or suspended` };
+  }
 
-    const bio = await page.locator('[data-testid="UserDescription"]').first().innerText().catch(() => '');
+  // Fetch tweets
+  const tweets: ProfileTweet[] = [];
+  const pinnedIds = new Set(profile.pinnedTweetIds || []);
 
-    // Extract follower/following counts from the profile header area
-    const followingLink = page.locator(`a[href="/${cleanUsername}/following"]`).first();
-    const followersLink = page.locator(`a[href="/${cleanUsername}/verified_followers"], a[href="/${cleanUsername}/followers"]`).first();
-
-    const followingCount = await followingLink.innerText().catch(() => '0');
-    const followersCount = await followersLink.innerText().catch(() => '0');
-
-    // Scroll to load tweets
-    const tweets: ProfileTweet[] = [];
-    let scrollAttempts = 0;
-    const maxScrolls = 3;
-
-    while (tweets.length < maxTweets && scrollAttempts < maxScrolls) {
-      const articles = page.locator('article[data-testid="tweet"]');
-      const count = await articles.count();
-
-      for (let i = tweets.length; i < Math.min(count, maxTweets); i++) {
-        const article = articles.nth(i);
-
-        const authorText = await article.locator('[data-testid="User-Name"]').first().innerText().catch(() => '');
-        const parts = authorText.split('\n').filter(Boolean);
-        const author = parts[0] || '';
-        const handle = parts.find(p => p.startsWith('@')) || '';
-
-        const content = await article.locator('[data-testid="tweetText"]').first().innerText().catch(() => '');
-        const timestamp = await article.locator('time').first().getAttribute('datetime').catch(() => '') || '';
-
-        // Check if it's a retweet (different author than profile owner)
-        const isRetweet = handle !== `@${cleanUsername}`;
-
-        // Check for pinned indicator
-        const isPinned = await article.locator('text=Pinned').isVisible().catch(() => false);
-
-        tweets.push({ author, handle, content, timestamp, isRetweet, isPinned });
-      }
-
+  try {
+    const generator = scraper.getTweets(cleanUsername, maxTweets);
+    for await (const tweet of generator) {
       if (tweets.length >= maxTweets) break;
 
-      // Scroll for more
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
-      await page.waitForTimeout(config.timeouts.pageLoad);
-      scrollAttempts++;
+      const isRetweet = tweet.isRetweet === true;
+      const actualTweet = isRetweet && tweet.retweetedStatus ? tweet.retweetedStatus : tweet;
+
+      tweets.push({
+        author: actualTweet.name || '',
+        handle: actualTweet.username ? `@${actualTweet.username}` : '',
+        content: actualTweet.text || '',
+        timestamp: actualTweet.timeParsed?.toISOString() || '',
+        isRetweet,
+        isPinned: pinnedIds.has(tweet.id || ''),
+      });
     }
-
-    const profileData: ProfileData = {
-      username: cleanUsername,
-      displayName,
-      bio,
-      followersCount,
-      followingCount,
-      tweets,
-    };
-
-    return {
-      success: true,
-      message: formatProfileOutput(profileData),
-      data: profileData,
-    };
-
-  } finally {
-    if (context) await context.close();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('rate limit') || msg.includes('429')) {
+      // Return profile data even if tweets failed
+      if (tweets.length === 0) {
+        return { success: false, message: `Rate limited while fetching tweets for @${cleanUsername}. Try again later.` };
+      }
+    } else {
+      throw err;
+    }
   }
+
+  const formatCount = (n: number | undefined): string => {
+    if (n === undefined) return '0';
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+    return String(n);
+  };
+
+  const profileData: ProfileData = {
+    username: cleanUsername,
+    displayName: profile.name || '',
+    bio: profile.biography || '',
+    followersCount: formatCount(profile.followersCount),
+    followingCount: formatCount(profile.followingCount),
+    tweets,
+  };
+
+  return {
+    success: true,
+    message: formatProfileOutput(profileData),
+    data: profileData,
+  };
 }
 
 function formatProfileOutput(profile: ProfileData): string {
@@ -146,4 +132,18 @@ function formatProfileOutput(profile: ProfileData): string {
   return lines.join('\n');
 }
 
-runScript<ProfileInput>(scrapeProfile);
+async function main(): Promise<void> {
+  try {
+    const input = await readInput<ProfileInput>();
+    const result = await scrapeProfile(input);
+    writeResult(result);
+  } catch (err) {
+    writeResult({
+      success: false,
+      message: `Script execution failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    process.exit(1);
+  }
+}
+
+main();

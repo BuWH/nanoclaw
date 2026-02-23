@@ -410,18 +410,23 @@ Uses browser automation on the host machine.`,
   );
 
   server.tool(
-    'x_scrape_timeline',
-    `Scrape the authenticated user's home timeline from X (Twitter). Returns recent tweets from the Following feed. Main group only.
-Uses browser automation on the host machine.`,
+    'x_search_tweets',
+    `Search tweets on X (Twitter). Returns tweets matching a search query. Main group only.
+Supports two modes: "top" for popular/relevant tweets, "latest" for chronological.
+Uses the twitter-scraper API on the host machine.`,
     {
-      max_tweets: z.number().default(20).describe('Maximum number of tweets to scrape from home timeline'),
+      query: z.string().describe('Search query (e.g., "AI", "Claude Code", "from:elonmusk")'),
+      max_tweets: z.number().default(20).describe('Maximum number of tweets to return'),
+      search_mode: z.enum(['top', 'latest']).default('top').describe('Search mode: "top" for popular, "latest" for chronological'),
     },
     async (args) => {
-      const requestId = `xtimeline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const requestId = `xsearch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       writeIpcFile(TASKS_DIR, {
-        type: 'x_scrape_timeline',
+        type: 'x_search_tweets',
         requestId,
+        query: args.query,
         maxTweets: args.max_tweets,
+        searchMode: args.search_mode,
         groupFolder,
         timestamp: new Date().toISOString(),
       });

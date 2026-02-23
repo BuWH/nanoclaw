@@ -22,14 +22,17 @@ interface SkillResult {
   data?: unknown;
 }
 
-// Run a skill script as subprocess
-async function runScript(script: string, args: object): Promise<SkillResult> {
+const SCRIPT_TIMEOUT_MS = 120_000;
+
+// Run a skill script as subprocess with process-group cleanup on timeout
+export async function runScript(script: string, args: object, timeoutMs = SCRIPT_TIMEOUT_MS): Promise<SkillResult> {
   const scriptPath = path.join(PROJECT_ROOT, '.claude', 'skills', 'x-integration', 'scripts', `${script}.ts`);
   const tsxBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'tsx');
 
   return new Promise((resolve) => {
     const proc = spawn(tsxBin, [scriptPath], {
       cwd: PROJECT_ROOT,
+      detached: true,
       env: {
         ...process.env,
         NANOCLAW_ROOT: PROJECT_ROOT,
@@ -37,6 +40,9 @@ async function runScript(script: string, args: object): Promise<SkillResult> {
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Prevent the detached process group from keeping the parent alive
+    proc.unref();
 
     let stdout = '';
     let stderr = '';
@@ -46,9 +52,10 @@ async function runScript(script: string, args: object): Promise<SkillResult> {
     proc.stdin.end();
 
     const timer = setTimeout(() => {
-      proc.kill('SIGTERM');
-      resolve({ success: false, message: `Script timed out (120s). stderr: ${stderr.slice(0, 300)}` });
-    }, 120000);
+      // Kill the entire process group (tsx + all children like Chrome)
+      try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+      resolve({ success: false, message: `Script timed out (${timeoutMs / 1000}s). stderr: ${stderr.slice(0, 300)}` });
+    }, timeoutMs);
 
     proc.on('close', (code) => {
       clearTimeout(timer);
@@ -176,9 +183,15 @@ export async function handleXIpc(
       });
       break;
 
-    case 'x_scrape_timeline':
-      result = await runScript('scrape-timeline', {
+    case 'x_search_tweets':
+      if (!data.query) {
+        result = { success: false, message: 'Missing query parameter. Provide a search query to find tweets.' };
+        break;
+      }
+      result = await runScript('search-tweets', {
+        query: data.query,
         maxTweets: data.maxTweets ?? 20,
+        searchMode: data.searchMode ?? 'top',
       });
       break;
 

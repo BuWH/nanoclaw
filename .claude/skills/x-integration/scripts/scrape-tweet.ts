@@ -1,11 +1,14 @@
 #!/usr/bin/env npx tsx
 /**
- * X Integration - Scrape Tweet
- * Extracts tweet content, author, metrics, and replies from a tweet page.
+ * X Integration - Scrape Tweet (API-based)
+ *
+ * Uses @the-convocation/twitter-scraper API instead of Playwright.
+ *
  * Usage: echo '{"tweetUrl":"https://x.com/user/status/123"}' | npx tsx scrape-tweet.ts
  */
 
-import { getBrowserContext, navigateToTweet, runScript, config, ScriptResult } from '../lib/browser.js';
+import { createScraper } from '../lib/scraper.js';
+import { readInput, writeResult, extractTweetId, type ScriptResult } from '../lib/browser.js';
 
 interface ScrapeInput {
   tweetUrl: string;
@@ -43,103 +46,65 @@ async function scrapeTweet(input: ScrapeInput): Promise<ScriptResult> {
     return { success: false, message: 'Please provide a tweet URL' };
   }
 
-  let context = null;
-  try {
-    context = await getBrowserContext();
-    const { page, success, error } = await navigateToTweet(context, tweetUrl);
-
-    if (!success) {
-      return { success: false, message: error || 'Navigation failed' };
-    }
-
-    // Wait for tweet content to load
-    const mainTweet = page.locator('article[data-testid="tweet"]').first();
-    await mainTweet.waitFor({ timeout: config.timeouts.elementWait });
-
-    // Extract author info
-    const authorName = await mainTweet.locator('[data-testid="User-Name"]').first().innerText().catch(() => '');
-    const parts = authorName.split('\n').filter(Boolean);
-    const author = parts[0] || '';
-    const handle = parts.find(p => p.startsWith('@')) || '';
-
-    // Extract tweet text
-    const tweetTextEl = mainTweet.locator('[data-testid="tweetText"]').first();
-    const content = await tweetTextEl.innerText().catch(() => '');
-
-    // Extract timestamp
-    const timeEl = mainTweet.locator('time').first();
-    const timestamp = await timeEl.getAttribute('datetime').catch(() => '') || '';
-
-    // Extract metrics from the tweet detail page
-    // On detail pages, metrics appear below the tweet as text spans
-    const metricsText = await page.locator('[role="group"][aria-label]').first().getAttribute('aria-label').catch(() => '');
-    const metrics = {
-      replies: extractMetric(metricsText || '', /(\d[\d,.]*)\s*repl/i),
-      reposts: extractMetric(metricsText || '', /(\d[\d,.]*)\s*repost/i),
-      likes: extractMetric(metricsText || '', /(\d[\d,.]*)\s*like/i),
-      views: extractMetric(metricsText || '', /(\d[\d,.]*)\s*view/i),
-      bookmarks: extractMetric(metricsText || '', /(\d[\d,.]*)\s*bookmark/i),
-    };
-
-    // Extract quoted tweet if present
-    let quotedTweet: TweetData['quotedTweet'] | undefined;
-    const quotedEl = mainTweet.locator('[data-testid="quoteTweet"]').first();
-    const hasQuote = await quotedEl.isVisible().catch(() => false);
-    if (hasQuote) {
-      const qAuthor = await quotedEl.locator('[data-testid="User-Name"]').first().innerText().catch(() => '');
-      const qContent = await quotedEl.locator('[data-testid="tweetText"]').first().innerText().catch(() => '');
-      quotedTweet = { author: qAuthor.split('\n')[0] || '', content: qContent };
-    }
-
-    // Extract replies if requested
-    const replies: TweetData['replies'] = [];
-    if (includeReplies) {
-      // Scroll down to load replies
-      await page.waitForTimeout(config.timeouts.pageLoad);
-
-      // Get all tweet articles after the main one
-      const allTweets = page.locator('article[data-testid="tweet"]');
-      const count = await allTweets.count();
-
-      // Skip first (main tweet), take up to maxReplies
-      for (let i = 1; i < Math.min(count, maxReplies + 1); i++) {
-        const reply = allTweets.nth(i);
-        const rAuthorText = await reply.locator('[data-testid="User-Name"]').first().innerText().catch(() => '');
-        const rParts = rAuthorText.split('\n').filter(Boolean);
-        const rContent = await reply.locator('[data-testid="tweetText"]').first().innerText().catch(() => '');
-
-        replies.push({
-          author: rParts[0] || '',
-          handle: rParts.find(p => p.startsWith('@')) || '',
-          content: rContent,
-        });
-      }
-    }
-
-    const tweetData: TweetData = {
-      author,
-      handle,
-      content,
-      timestamp,
-      metrics,
-      replies,
-      ...(quotedTweet ? { quotedTweet } : {}),
-    };
-
-    return {
-      success: true,
-      message: formatTweetOutput(tweetData),
-      data: tweetData,
-    };
-
-  } finally {
-    if (context) await context.close();
+  const tweetId = extractTweetId(tweetUrl);
+  if (!tweetId) {
+    return { success: false, message: `Invalid tweet URL or ID: ${tweetUrl}` };
   }
-}
 
-function extractMetric(text: string, pattern: RegExp): string {
-  const match = text.match(pattern);
-  return match ? match[1] : '0';
+  const scraper = await createScraper();
+  const tweet = await scraper.getTweet(tweetId);
+
+  if (!tweet) {
+    return { success: false, message: 'Tweet not found. It may have been deleted or the URL is invalid.' };
+  }
+
+  // Extract quoted tweet
+  let quotedTweet: TweetData['quotedTweet'] | undefined;
+  if (tweet.quotedStatus) {
+    quotedTweet = {
+      author: tweet.quotedStatus.name || tweet.quotedStatus.username || '',
+      content: tweet.quotedStatus.text || '',
+    };
+  }
+
+  // Extract replies from the tweet thread if requested
+  const replies: TweetData['replies'] = [];
+  if (includeReplies && tweet.thread.length > 0) {
+    for (const reply of tweet.thread.slice(0, maxReplies)) {
+      replies.push({
+        author: reply.name || '',
+        handle: reply.username ? `@${reply.username}` : '',
+        content: reply.text || '',
+      });
+    }
+  }
+
+  const formatMetric = (n: number | undefined): string => {
+    if (n === undefined) return '0';
+    return String(n);
+  };
+
+  const tweetData: TweetData = {
+    author: tweet.name || '',
+    handle: tweet.username ? `@${tweet.username}` : '',
+    content: tweet.text || '',
+    timestamp: tweet.timeParsed?.toISOString() || '',
+    metrics: {
+      replies: formatMetric(tweet.replies),
+      reposts: formatMetric(tweet.retweets),
+      likes: formatMetric(tweet.likes),
+      views: formatMetric(tweet.views),
+      bookmarks: formatMetric(tweet.bookmarkCount),
+    },
+    replies,
+    ...(quotedTweet ? { quotedTweet } : {}),
+  };
+
+  return {
+    success: true,
+    message: formatTweetOutput(tweetData),
+    data: tweetData,
+  };
 }
 
 function formatTweetOutput(tweet: TweetData): string {
@@ -165,4 +130,18 @@ function formatTweetOutput(tweet: TweetData): string {
   return lines.join('\n');
 }
 
-runScript<ScrapeInput>(scrapeTweet);
+async function main(): Promise<void> {
+  try {
+    const input = await readInput<ScrapeInput>();
+    const result = await scrapeTweet(input);
+    writeResult(result);
+  } catch (err) {
+    writeResult({
+      success: false,
+      message: `Script execution failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    process.exit(1);
+  }
+}
+
+main();
