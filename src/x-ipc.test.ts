@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -21,6 +22,19 @@ vi.mock('./logger.js', () => ({
 // to verify process-group kill behavior.
 
 import { runScript, handleXIpc } from './x-ipc.js';
+import {
+  extractTweetId,
+  loadCache,
+  saveCache,
+  getCachedTweet,
+  cacheTweets,
+  cacheTweetsFromSearch,
+  cacheTweetFromScrape,
+  formatCachedTweet,
+  pruneCache,
+  type TweetCacheEntry,
+  type SearchTweet,
+} from './x-tweet-cache.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -315,5 +329,443 @@ describe('handleXIpc', () => {
   afterEach(async () => {
     const { rmSync } = await import('fs');
     try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// x-tweet-cache -- unit tests
+// ---------------------------------------------------------------------------
+describe('x-tweet-cache', () => {
+  const CACHE_FILE = path.join(PROJECT_ROOT, 'data', 'x-tweet-cache.json');
+
+  function makeCacheEntry(overrides: Partial<TweetCacheEntry> = {}): TweetCacheEntry {
+    return {
+      id: '123456789',
+      author: 'Test User',
+      handle: '@testuser',
+      content: 'Hello world',
+      timestamp: '2026-02-20T10:00:00.000Z',
+      url: 'https://x.com/testuser/status/123456789',
+      likes: 42,
+      retweets: 10,
+      replies: 5,
+      views: 1000,
+      cachedAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    // Ensure clean cache state
+    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+  });
+
+  afterEach(() => {
+    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+  });
+
+  describe('extractTweetId', () => {
+    it('extracts ID from x.com URL', () => {
+      expect(extractTweetId('https://x.com/user/status/123456789')).toBe('123456789');
+    });
+
+    it('extracts ID from twitter.com URL', () => {
+      expect(extractTweetId('https://twitter.com/user/status/987654321')).toBe('987654321');
+    });
+
+    it('accepts raw numeric ID', () => {
+      expect(extractTweetId('123456789')).toBe('123456789');
+    });
+
+    it('returns null for invalid input', () => {
+      expect(extractTweetId('not-a-url')).toBeNull();
+      expect(extractTweetId('https://example.com/page')).toBeNull();
+    });
+  });
+
+  describe('loadCache / saveCache', () => {
+    it('returns empty cache when file does not exist', () => {
+      const cache = loadCache();
+      expect(cache.version).toBe(1);
+      expect(Object.keys(cache.tweets)).toHaveLength(0);
+    });
+
+    it('round-trips cache through file', () => {
+      const entry = makeCacheEntry();
+      saveCache({ version: 1, tweets: { [entry.id]: entry } });
+      const loaded = loadCache();
+      expect(loaded.tweets[entry.id]).toEqual(entry);
+    });
+
+    it('handles corrupted file gracefully', () => {
+      fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+      fs.writeFileSync(CACHE_FILE, 'not json');
+      const cache = loadCache();
+      expect(cache.version).toBe(1);
+      expect(Object.keys(cache.tweets)).toHaveLength(0);
+    });
+  });
+
+  describe('getCachedTweet', () => {
+    it('returns cached tweet by ID', () => {
+      const entry = makeCacheEntry({ id: '111' });
+      saveCache({ version: 1, tweets: { '111': entry } });
+      const result = getCachedTweet('111');
+      expect(result).toEqual(entry);
+    });
+
+    it('returns null for missing tweet', () => {
+      saveCache({ version: 1, tweets: {} });
+      expect(getCachedTweet('999')).toBeNull();
+    });
+
+    it('returns null for expired tweet (TTL)', () => {
+      const staleEntry = makeCacheEntry({
+        id: '222',
+        cachedAt: Date.now() - 8 * 24 * 60 * 60 * 1000, // 8 days ago
+      });
+      saveCache({ version: 1, tweets: { '222': staleEntry } });
+      expect(getCachedTweet('222')).toBeNull();
+    });
+
+    it('returns tweet within TTL', () => {
+      const freshEntry = makeCacheEntry({
+        id: '333',
+        cachedAt: Date.now() - 6 * 24 * 60 * 60 * 1000, // 6 days ago (within 7-day TTL)
+      });
+      saveCache({ version: 1, tweets: { '333': freshEntry } });
+      expect(getCachedTweet('333')).toEqual(freshEntry);
+    });
+  });
+
+  describe('cacheTweets', () => {
+    it('stores multiple entries', () => {
+      const entries = [
+        makeCacheEntry({ id: 'a1' }),
+        makeCacheEntry({ id: 'a2' }),
+      ];
+      cacheTweets(entries);
+      const cache = loadCache();
+      expect(Object.keys(cache.tweets)).toHaveLength(2);
+      expect(cache.tweets['a1']).toBeDefined();
+      expect(cache.tweets['a2']).toBeDefined();
+    });
+
+    it('skips entries without ID', () => {
+      const entries = [
+        makeCacheEntry({ id: '' }),
+        makeCacheEntry({ id: 'valid' }),
+      ];
+      cacheTweets(entries);
+      const cache = loadCache();
+      expect(Object.keys(cache.tweets)).toHaveLength(1);
+      expect(cache.tweets['valid']).toBeDefined();
+    });
+  });
+
+  describe('pruneCache', () => {
+    it('removes expired entries', () => {
+      const cache = {
+        version: 1 as const,
+        tweets: {
+          fresh: makeCacheEntry({ id: 'fresh', cachedAt: Date.now() }),
+          stale: makeCacheEntry({ id: 'stale', cachedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 }),
+        },
+      };
+      const pruned = pruneCache(cache);
+      expect(Object.keys(pruned.tweets)).toHaveLength(1);
+      expect(pruned.tweets['fresh']).toBeDefined();
+      expect(pruned.tweets['stale']).toBeUndefined();
+    });
+
+    it('limits to max entries (500), keeping newest', () => {
+      const tweets: Record<string, TweetCacheEntry> = {};
+      for (let i = 0; i < 510; i++) {
+        tweets[`t${i}`] = makeCacheEntry({
+          id: `t${i}`,
+          cachedAt: Date.now() - i * 1000, // older entries have smaller cachedAt
+        });
+      }
+      const cache = { version: 1 as const, tweets };
+      const pruned = pruneCache(cache);
+      expect(Object.keys(pruned.tweets)).toHaveLength(500);
+      // Oldest 10 should be pruned (t500-t509)
+      expect(pruned.tweets['t0']).toBeDefined();
+      expect(pruned.tweets['t499']).toBeDefined();
+      expect(pruned.tweets['t500']).toBeUndefined();
+    });
+  });
+
+  describe('cacheTweetsFromSearch', () => {
+    it('caches search result tweets', () => {
+      const searchTweets: SearchTweet[] = [
+        {
+          id: 's1',
+          author: 'Alice',
+          handle: '@alice',
+          content: 'Search result 1',
+          timestamp: '2026-02-20T10:00:00.000Z',
+          url: 'https://x.com/alice/status/s1',
+          isRetweet: false,
+          hasMedia: false,
+          likes: 100,
+          retweets: 20,
+          replies: 5,
+          views: 5000,
+        },
+        {
+          id: 's2',
+          author: 'Bob',
+          handle: '@bob',
+          content: 'Search result 2',
+          timestamp: '2026-02-20T11:00:00.000Z',
+          url: 'https://x.com/bob/status/s2',
+          isRetweet: false,
+          hasMedia: true,
+          likes: 50,
+          retweets: 10,
+          replies: 2,
+          views: 2000,
+          quotedTweet: { author: 'Carol', content: 'Original tweet' },
+        },
+      ];
+
+      cacheTweetsFromSearch(searchTweets);
+
+      const cached1 = getCachedTweet('s1');
+      expect(cached1).toBeTruthy();
+      expect(cached1!.author).toBe('Alice');
+      expect(cached1!.likes).toBe(100);
+
+      const cached2 = getCachedTweet('s2');
+      expect(cached2).toBeTruthy();
+      expect(cached2!.quotedTweet).toEqual({ author: 'Carol', content: 'Original tweet' });
+    });
+  });
+
+  describe('cacheTweetFromScrape', () => {
+    it('caches a scraped tweet with string metrics', () => {
+      cacheTweetFromScrape('scrape1', {
+        author: 'Dave',
+        handle: '@dave',
+        content: 'Scraped content',
+        timestamp: '2026-02-20T12:00:00.000Z',
+        metrics: {
+          replies: '15',
+          reposts: '30',
+          likes: '200',
+          views: '10000',
+          bookmarks: '5',
+        },
+        replies: [],
+      });
+
+      const cached = getCachedTweet('scrape1');
+      expect(cached).toBeTruthy();
+      expect(cached!.author).toBe('Dave');
+      expect(cached!.likes).toBe(200);
+      expect(cached!.retweets).toBe(30);
+      expect(cached!.views).toBe(10000);
+    });
+
+    it('does nothing when tweetId is null', () => {
+      cacheTweetFromScrape(null, {
+        author: 'Nobody',
+        handle: '@nobody',
+        content: 'test',
+        timestamp: '',
+        metrics: { replies: '0', reposts: '0', likes: '0', views: '0', bookmarks: '0' },
+        replies: [],
+      });
+      const cache = loadCache();
+      expect(Object.keys(cache.tweets)).toHaveLength(0);
+    });
+  });
+
+  describe('formatCachedTweet', () => {
+    it('formats tweet matching scrape-tweet output style', () => {
+      const entry = makeCacheEntry({
+        author: 'Test User',
+        handle: '@testuser',
+        content: 'Hello world',
+        timestamp: '2026-02-20T10:00:00.000Z',
+        likes: 42,
+        retweets: 10,
+        replies: 5,
+        views: 1000,
+      });
+      const output = formatCachedTweet(entry);
+      expect(output).toContain('Test User (@testuser)');
+      expect(output).toContain('Hello world');
+      expect(output).toContain('Replies: 5 | Reposts: 10 | Likes: 42 | Views: 1000');
+      expect(output).toContain('[Served from cache]');
+    });
+
+    it('includes quoted tweet when present', () => {
+      const entry = makeCacheEntry({
+        quotedTweet: { author: 'Original', content: 'Original content' },
+      });
+      const output = formatCachedTweet(entry);
+      expect(output).toContain('Quoting Original:');
+      expect(output).toContain('Original content');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleXIpc -- tweet cache integration
+// ---------------------------------------------------------------------------
+describe('handleXIpc tweet cache', () => {
+  const dataDir = '/tmp/nanoclaw-test-xipc-cache';
+  const CACHE_FILE = path.join(PROJECT_ROOT, 'data', 'x-tweet-cache.json');
+
+  beforeEach(() => {
+    fs.mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), { recursive: true });
+    // Ensure clean cache
+    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+  });
+
+  it('serves x_scrape_tweet from cache when tweet is cached (no subprocess)', async () => {
+    // Pre-populate cache with a tweet
+    const entry = {
+      id: '1234567890',
+      author: 'Cached Author',
+      handle: '@cached',
+      content: 'This is cached',
+      timestamp: '2026-02-20T10:00:00.000Z',
+      url: 'https://x.com/cached/status/1234567890',
+      likes: 99,
+      retweets: 33,
+      replies: 11,
+      views: 5000,
+      cachedAt: Date.now(),
+    };
+    saveCache({ version: 1, tweets: { '1234567890': entry } });
+
+    const handled = await handleXIpc(
+      {
+        type: 'x_scrape_tweet',
+        requestId: 'r-cache-hit',
+        tweetUrl: 'https://x.com/cached/status/1234567890',
+      },
+      'main',
+      true,
+      dataDir,
+    );
+
+    expect(handled).toBe(true);
+
+    const result = JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-cache-hit.json'), 'utf-8'),
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('Cached Author');
+    expect(result.message).toContain('[Served from cache]');
+    expect(result.data.id).toBe('1234567890');
+  });
+
+  it('bypasses cache when includeReplies is true', async () => {
+    // Pre-populate cache
+    const entry = {
+      id: '9876543210',
+      author: 'Cached',
+      handle: '@cached',
+      content: 'Cached tweet',
+      timestamp: '2026-02-20T10:00:00.000Z',
+      url: 'https://x.com/cached/status/9876543210',
+      likes: 1,
+      retweets: 0,
+      replies: 0,
+      views: 10,
+      cachedAt: Date.now(),
+    };
+    saveCache({ version: 1, tweets: { '9876543210': entry } });
+
+    // This will attempt to spawn a subprocess (which will fail since it's a test),
+    // proving the cache was bypassed
+    const handled = await handleXIpc(
+      {
+        type: 'x_scrape_tweet',
+        requestId: 'r-replies-bypass',
+        tweetUrl: 'https://x.com/cached/status/9876543210',
+        includeReplies: true,
+      },
+      'main',
+      true,
+      dataDir,
+    );
+
+    expect(handled).toBe(true);
+
+    const result = JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-replies-bypass.json'), 'utf-8'),
+    );
+    // Should NOT have served from cache (subprocess ran and failed in test env)
+    expect(result.message).not.toContain('[Served from cache]');
+  });
+
+  it('does not serve expired cached tweets', async () => {
+    // Pre-populate cache with an expired entry
+    const entry = {
+      id: '5555555555',
+      author: 'Stale Author',
+      handle: '@stale',
+      content: 'Stale tweet',
+      timestamp: '2026-02-10T10:00:00.000Z',
+      url: 'https://x.com/stale/status/5555555555',
+      likes: 1,
+      retweets: 0,
+      replies: 0,
+      views: 10,
+      cachedAt: Date.now() - 8 * 24 * 60 * 60 * 1000, // 8 days ago, beyond 7-day TTL
+    };
+    saveCache({ version: 1, tweets: { '5555555555': entry } });
+
+    const handled = await handleXIpc(
+      {
+        type: 'x_scrape_tweet',
+        requestId: 'r-ttl-expired',
+        tweetUrl: 'https://x.com/stale/status/5555555555',
+      },
+      'main',
+      true,
+      dataDir,
+    );
+
+    expect(handled).toBe(true);
+
+    const result = JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-ttl-expired.json'), 'utf-8'),
+    );
+    // Should NOT have served from cache (subprocess ran and failed)
+    expect(result.message).not.toContain('[Served from cache]');
+  });
+
+  it('falls through to subprocess on cache miss', async () => {
+    // No cache populated -- should try to spawn subprocess
+    const handled = await handleXIpc(
+      {
+        type: 'x_scrape_tweet',
+        requestId: 'r-cache-miss',
+        tweetUrl: 'https://x.com/user/status/1111111111',
+      },
+      'main',
+      true,
+      dataDir,
+    );
+
+    expect(handled).toBe(true);
+
+    const result = JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-cache-miss.json'), 'utf-8'),
+    );
+    // Subprocess will fail in test environment, but it proves no cache was served
+    expect(result.success).toBe(false);
+    expect(result.message).not.toContain('[Served from cache]');
   });
 });

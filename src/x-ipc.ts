@@ -11,6 +11,17 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { logger } from './logger.js';
+import {
+  extractTweetId,
+  getCachedTweet,
+  formatCachedTweet,
+  cacheTweetsFromSearch,
+  cacheTweetsFromProfile,
+  cacheTweetFromScrape,
+  type SearchTweet,
+  type ProfileData,
+  type ScrapedTweetData,
+} from './x-tweet-cache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -165,11 +176,27 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing tweetUrl' };
         break;
       }
-      result = await runScript('scrape-tweet', {
-        tweetUrl: data.tweetUrl,
-        includeReplies: data.includeReplies ?? false,
-        maxReplies: data.maxReplies ?? 10,
-      });
+      {
+        const tweetId = extractTweetId(data.tweetUrl as string);
+        // Serve from cache when not requesting replies (replies are never cached)
+        if (tweetId && !data.includeReplies) {
+          const cached = getCachedTweet(tweetId);
+          if (cached) {
+            logger.info({ tweetId, requestId }, 'Tweet cache hit');
+            result = { success: true, message: formatCachedTweet(cached), data: cached };
+            break;
+          }
+        }
+        result = await runScript('scrape-tweet', {
+          tweetUrl: data.tweetUrl,
+          includeReplies: data.includeReplies ?? false,
+          maxReplies: data.maxReplies ?? 10,
+        });
+        // Cache freshly scraped tweet
+        if (result.success && result.data) {
+          cacheTweetFromScrape(tweetId, result.data as ScrapedTweetData);
+        }
+      }
       break;
 
     case 'x_scrape_profile':
@@ -181,6 +208,9 @@ export async function handleXIpc(
         username: data.username,
         maxTweets: data.maxTweets ?? 10,
       });
+      if (result.success && result.data) {
+        cacheTweetsFromProfile(result.data as ProfileData);
+      }
       break;
 
     case 'x_search_tweets':
@@ -193,6 +223,9 @@ export async function handleXIpc(
         maxTweets: data.maxTweets ?? 20,
         searchMode: data.searchMode ?? 'top',
       });
+      if (result.success && result.data) {
+        cacheTweetsFromSearch(result.data as SearchTweet[]);
+      }
       break;
 
     default:
