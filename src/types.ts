@@ -65,6 +65,7 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
   created_at: string;
+  extra_chat_jids?: string; // JSON array of additional chat JIDs to receive task results
 }
 
 export interface TaskRunLog {
