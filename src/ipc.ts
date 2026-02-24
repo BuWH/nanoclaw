@@ -31,6 +31,7 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   restart: () => Promise<void>;
+  triggerSchedulerDrain?: () => void;
 }
 
 let ipcWatcherRunning = false;
@@ -192,6 +193,7 @@ export async function processTaskIpc(
     chatJid?: string;
     targetJid?: string;
     replace_task_id?: string;
+    isBackground?: boolean;
     // For register_group
     jid?: string;
     name?: string;
@@ -320,6 +322,11 @@ export async function processTaskIpc(
           { taskId, sourceGroup, targetFolder, contextMode },
           'Task created via IPC',
         );
+
+        // Background tasks should be picked up immediately, not after 60s
+        if (data.isBackground) {
+          deps.triggerSchedulerDrain?.();
+        }
       }
       break;
 

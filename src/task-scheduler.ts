@@ -217,6 +217,16 @@ async function runTask(
 }
 
 let schedulerRunning = false;
+let drainRequested = false;
+
+/**
+ * Request the scheduler to run its next iteration immediately instead of
+ * waiting for SCHEDULER_POLL_INTERVAL. Used by background tasks to avoid
+ * the 60s delay before a newly created `once` task is picked up.
+ */
+export function triggerSchedulerDrain(): void {
+  drainRequested = true;
+}
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
   if (schedulerRunning) {
@@ -250,7 +260,9 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       logger.error({ err }, 'Error in scheduler loop');
     }
 
-    setTimeout(loop, SCHEDULER_POLL_INTERVAL);
+    const delay = drainRequested ? 0 : SCHEDULER_POLL_INTERVAL;
+    drainRequested = false;
+    setTimeout(loop, delay);
   };
 
   loop();

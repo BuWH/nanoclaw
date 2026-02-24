@@ -318,6 +318,15 @@ export class GroupQueue {
     }
   }
 
+  /**
+   * Returns true when the group has an active container that is not idle-waiting.
+   * Used by the message loop to decide whether to send status feedback.
+   */
+  isBusy(groupJid: string): boolean {
+    const state = this.groups.get(groupJid);
+    return !!state && state.active && !state.idleWaiting;
+  }
+
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 

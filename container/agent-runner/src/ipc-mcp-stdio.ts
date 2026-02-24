@@ -176,6 +176,43 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 );
 
 server.tool(
+  'run_background_task',
+  `Move a heavy or long-running task to run in the background. Use this when:
+- The task will take more than 30 seconds (web research, code analysis, report generation)
+- You want to stay available for follow-up messages while the task runs
+
+The background task runs as a full agent with all tools available. It should send results to the chat via send_message.
+After calling this, respond to the user confirming the task is running in background.
+
+Include ALL necessary context in the prompt — the background agent starts a fresh or group-context session and won't see the current conversation directly.`,
+  {
+    prompt: z.string().describe('Complete instructions for the background agent. Include all context it needs.'),
+    context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history, isolated=fresh session'),
+  },
+  async (args) => {
+    const targetJid = chatJid;
+
+    const data = {
+      type: 'schedule_task',
+      prompt: args.prompt,
+      schedule_type: 'once',
+      schedule_value: new Date().toISOString(),
+      context_mode: args.context_mode || 'group',
+      targetJid,
+      createdBy: groupFolder,
+      isBackground: true,
+      timestamp: new Date().toISOString(),
+    };
+
+    const filename = writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Background task created (${filename}). It will start within a few seconds.` }],
+    };
+  },
+);
+
+server.tool(
   'list_tasks',
   "List all scheduled tasks with full details (status, schedule, last run, next run, etc.). From main: shows all tasks. From other groups: shows only that group's tasks.",
   {},

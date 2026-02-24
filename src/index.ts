@@ -40,7 +40,7 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
-import { startSchedulerLoop } from './task-scheduler.js';
+import { startSchedulerLoop, triggerSchedulerDrain } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -409,6 +409,14 @@ async function startMessageLoop(): Promise<void> {
           } else {
             // No active container — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);
+
+            // Status feedback: let the user know their message is queued
+            if (queue.isBusy(chatJid)) {
+              const ackMsgId = messagesToSend[0].id;
+              channel.sendMessage(chatJid, '收到，稍等...', ackMsgId).catch((err) =>
+                logger.warn({ chatJid, err }, 'Failed to send queue status'),
+              );
+            }
           }
         }
       }
@@ -516,6 +524,7 @@ async function main(): Promise<void> {
       for (const ch of channels) await ch.disconnect();
       process.exit(0);
     },
+    triggerSchedulerDrain,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
