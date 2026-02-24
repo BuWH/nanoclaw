@@ -191,6 +191,7 @@ export async function processTaskIpc(
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
+    replace_task_id?: string;
     // For register_group
     jid?: string;
     name?: string;
@@ -272,6 +273,30 @@ export async function processTaskIpc(
             break;
           }
           nextRun = scheduled.toISOString();
+        }
+
+        // Handle replace_task_id: atomically delete old task before creating new one
+        if (data.replace_task_id) {
+          const oldTask = getTaskById(data.replace_task_id);
+          if (oldTask) {
+            if (isMain || oldTask.group_folder === sourceGroup) {
+              deleteTask(data.replace_task_id);
+              logger.info(
+                { oldTaskId: data.replace_task_id, sourceGroup },
+                'Old task deleted for replacement',
+              );
+            } else {
+              logger.warn(
+                { oldTaskId: data.replace_task_id, sourceGroup },
+                'Unauthorized replace_task_id: old task belongs to different group',
+              );
+            }
+          } else {
+            logger.warn(
+              { oldTaskId: data.replace_task_id },
+              'replace_task_id not found, proceeding with new task creation',
+            );
+          }
         }
 
         const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

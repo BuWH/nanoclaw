@@ -85,6 +85,11 @@ server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools.
 
+MODIFYING EXISTING TASKS - When the user asks to change, update, or modify an existing scheduled task:
+1. First call list_tasks to find the existing task's ID
+2. Then call schedule_task with replace_task_id set to the old task's ID
+This atomically deletes the old task and creates the new one, preventing duplicates.
+
 CONTEXT MODE - Choose based on task type:
 \u2022 "group": Task runs in the group's conversation context, with access to chat history. Use for tasks that need context about ongoing discussions, user preferences, or recent interactions.
 \u2022 "isolated": Task runs in a fresh session with no conversation history. Use for independent tasks that don't need prior context. When using isolated mode, include all necessary context in the prompt itself.
@@ -110,6 +115,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
+    replace_task_id: z.string().optional().describe('When modifying an existing task, set this to the old task ID (from list_tasks). The old task will be atomically deleted before creating the new one.'),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -157,6 +163,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       context_mode: args.context_mode || 'group',
       targetJid,
       createdBy: groupFolder,
+      replace_task_id: args.replace_task_id || undefined,
       timestamp: new Date().toISOString(),
     };
 
@@ -170,7 +177,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 
 server.tool(
   'list_tasks',
-  "List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group's tasks.",
+  "List all scheduled tasks with full details (status, schedule, last run, next run, etc.). From main: shows all tasks. From other groups: shows only that group's tasks.",
   {},
   async () => {
     const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
@@ -192,12 +199,43 @@ server.tool(
 
       const formatted = tasks
         .map(
-          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string }) =>
-            `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
+          (t: {
+            id: string;
+            prompt: string;
+            schedule_type: string;
+            schedule_value: string;
+            status: string;
+            next_run: string | null;
+            last_run: string | null;
+            last_result: string | null;
+            created_at: string;
+            context_mode: string;
+            groupFolder: string;
+          }) => {
+            const lines = [
+              `[${t.id}]`,
+              `  Status: ${t.status}`,
+              `  Schedule: ${t.schedule_type} (${t.schedule_value})`,
+              `  Context: ${t.context_mode || 'isolated'}`,
+              `  Prompt: ${t.prompt.slice(0, 100)}${t.prompt.length > 100 ? '...' : ''}`,
+              `  Next run: ${t.next_run || 'N/A'}`,
+              `  Last run: ${t.last_run || 'never'}`,
+            ];
+            if (t.last_result) {
+              lines.push(`  Last result: ${t.last_result.slice(0, 100)}${t.last_result.length > 100 ? '...' : ''}`);
+            }
+            if (t.created_at) {
+              lines.push(`  Created: ${t.created_at}`);
+            }
+            if (isMain && t.groupFolder) {
+              lines.push(`  Group: ${t.groupFolder}`);
+            }
+            return lines.join('\n');
+          },
         )
-        .join('\n');
+        .join('\n\n');
 
-      return { content: [{ type: 'text' as const, text: `Scheduled tasks:\n${formatted}` }] };
+      return { content: [{ type: 'text' as const, text: `Scheduled tasks (${tasks.length}):\n\n${formatted}` }] };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}` }],

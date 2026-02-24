@@ -61,6 +61,7 @@ Keep messages clean and readable for WhatsApp.
 - 尽量用中文回复
 - 触发服务器重启（restart_server）前，必须先得到用户的明确确认
 - 每次 git push 后，展示所推送的 commits 内容（commit message、改动文件等）
+- 修改定时任务时，必须使用 schedule_task 的 replace_task_id 参数替换旧任务，而不是手动 cancel 再 schedule
 
 ## Notion
 
