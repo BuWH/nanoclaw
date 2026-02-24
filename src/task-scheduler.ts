@@ -99,6 +99,10 @@ async function runTask(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+      last_run: t.last_run,
+      last_result: t.last_result,
+      created_at: t.created_at,
+      context_mode: t.context_mode,
     })),
   );
 
@@ -140,8 +144,17 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
+          // Forward result to primary chat
           await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          // Forward to extra subscribers
+          const extraJids = parseExtraChatJids(task.extra_chat_jids);
+          for (const jid of extraJids) {
+            try {
+              await deps.sendMessage(jid, streamedOutput.result);
+            } catch (err) {
+              logger.error({ taskId: task.id, jid, err }, 'Failed to forward task result to extra chat');
+            }
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -241,6 +254,18 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   };
 
   loop();
+}
+
+/** Parse extra_chat_jids JSON string into an array of JID strings. */
+function parseExtraChatJids(raw: string | undefined | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.filter((j): j is string => typeof j === 'string');
+  } catch {
+    // ignore malformed JSON
+  }
+  return [];
 }
 
 /** @internal - for tests only. */

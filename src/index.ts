@@ -260,6 +260,10 @@ async function runAgent(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+      last_run: t.last_run,
+      last_result: t.last_result,
+      created_at: t.created_at,
+      context_mode: t.context_mode,
     })),
   );
 

@@ -348,7 +348,12 @@ export async function runContainerAgent(
             resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed));
+            outputChain = outputChain.then(() => onOutput(parsed)).catch((err) => {
+              logger.error(
+                { group: group.name, err },
+                'Error in streaming onOutput callback',
+              );
+            });
           } catch (err) {
             logger.warn(
               { group: group.name, error: err },
@@ -545,6 +550,16 @@ export async function runContainerAgent(
             result: null,
             newSessionId,
           });
+        }).catch((err) => {
+          logger.error(
+            { group: group.name, duration, err },
+            'Output chain failed during container completion',
+          );
+          resolve({
+            status: 'error',
+            result: null,
+            error: `Output chain error: ${err}`,
+          });
         });
         return;
       }
@@ -621,6 +636,10 @@ export function writeTasksSnapshot(
     schedule_value: string;
     status: string;
     next_run: string | null;
+    last_run: string | null;
+    last_result: string | null;
+    created_at: string;
+    context_mode: string;
   }>,
 ): void {
   // Write filtered tasks to the group's IPC directory
