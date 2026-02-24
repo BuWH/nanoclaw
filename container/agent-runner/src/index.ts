@@ -435,7 +435,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__notion__*',
-        'mcp__tavily-search__*'
+        'mcp__tavily-search__tavily_search'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
