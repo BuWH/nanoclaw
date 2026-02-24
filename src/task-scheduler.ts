@@ -106,6 +106,22 @@ async function runTask(
     })),
   );
 
+  // Advance next_run BEFORE running, so a restart won't re-trigger this execution.
+  // If the task fails, next_run is already advanced — this is acceptable because
+  // retrying a failed once-task would need manual intervention anyway, and
+  // cron/interval tasks will run again at the next scheduled time.
+  let advancedNextRun: string | null = null;
+  if (task.schedule_type === 'cron') {
+    const interval = CronExpressionParser.parse(task.schedule_value, { tz: TIMEZONE });
+    advancedNextRun = interval.next().toISOString();
+  } else if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    advancedNextRun = new Date(Date.now() + ms).toISOString();
+  } else if (task.schedule_type === 'once') {
+    advancedNextRun = '9999-01-01T00:00:00.000Z';
+  }
+  updateTask(task.id, { next_run: advancedNextRun });
+
   let result: string | null = null;
   let error: string | null = null;
 
@@ -124,7 +140,7 @@ async function runTask(
     if (closeTimer) return; // already scheduled
     closeTimer = setTimeout(() => {
       logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
+      deps.queue.closeTaskStdin(task.chat_jid);
     }, TASK_CLOSE_DELAY_MS);
   };
 
@@ -158,7 +174,8 @@ async function runTask(
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
-          deps.queue.notifyIdle(task.chat_jid);
+          deps.queue.notifyTaskIdle(task.chat_jid);
+          scheduleClose();
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
