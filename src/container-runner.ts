@@ -54,6 +54,7 @@ interface VolumeMount {
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
+  isScheduledTask = false,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -75,7 +76,7 @@ function buildVolumeMounts(
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
-      readonly: false,
+      readonly: isScheduledTask,
     });
 
     // Auto-mount allowed roots from the allowlist for main group
@@ -107,7 +108,7 @@ function buildVolumeMounts(
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
-      readonly: false,
+      readonly: isScheduledTask,
     });
 
     // Global memory directory (read-only for non-main)
@@ -252,7 +253,7 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group, input.isMain, input.isScheduledTask);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
@@ -276,6 +277,9 @@ export async function runContainerAgent(
       containerName,
       mountCount: mounts.length,
       isMain: input.isMain,
+      isScheduledTask: !!input.isScheduledTask,
+      promptLength: input.prompt.length,
+      sessionId: input.sessionId || 'new',
     },
     'Spawning container agent',
   );
@@ -297,8 +301,20 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets();
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    const secretKeys = Object.keys(input.secrets).filter((k) => !!input.secrets![k]);
+    try {
+      container.stdin.write(JSON.stringify(input));
+      container.stdin.end();
+      logger.debug(
+        { group: group.name, containerName, secretCount: secretKeys.length, secretKeys },
+        'Secrets written to container stdin',
+      );
+    } catch (err) {
+      logger.error(
+        { group: group.name, containerName, err },
+        'Failed to write to container stdin (container will not receive input)',
+      );
+    }
     // Remove secrets from input so they don't appear in logs
     delete input.secrets;
 
@@ -346,12 +362,22 @@ export async function runContainerAgent(
             hadStreamingOutput = true;
             // Activity detected — reset the hard timeout
             resetTimeout();
+            logger.debug(
+              {
+                group: group.name,
+                containerName,
+                status: parsed.status,
+                hasResult: !!parsed.result,
+                resultLength: parsed.result?.length || 0,
+              },
+              'Streaming output received from container',
+            );
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() => onOutput(parsed)).catch((err) => {
               logger.error(
-                { group: group.name, err },
-                'Error in streaming onOutput callback',
+                { group: group.name, containerName, status: parsed.status, err },
+                'Error in streaming onOutput callback (result may be lost)',
               );
             });
           } catch (err) {
@@ -615,7 +641,10 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
-      logger.error({ group: group.name, containerName, error: err }, 'Container spawn error');
+      logger.error(
+        { group: group.name, containerName, isScheduledTask: !!input.isScheduledTask, error: err },
+        'Container spawn error',
+      );
       resolve({
         status: 'error',
         result: null,

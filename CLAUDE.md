@@ -53,6 +53,10 @@ systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
 
+## Testing Policy
+
+When running `npm test`, fix ALL failures -- including pre-existing ones unrelated to the current task. A green test suite is a shared responsibility; never leave broken tests behind.
+
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
