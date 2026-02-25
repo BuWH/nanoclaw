@@ -9,6 +9,8 @@ import {
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
+import path from 'path';
+
 import { ContainerOutput, runContainerAgent, writeTasksSnapshot } from './container-runner.js';
 import {
   getAllTasks,
@@ -19,7 +21,7 @@ import {
   updateTaskAfterRun,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
@@ -120,7 +122,19 @@ async function runTask(
   } else if (task.schedule_type === 'once') {
     advancedNextRun = '9999-01-01T00:00:00.000Z';
   }
-  updateTask(task.id, { next_run: advancedNextRun });
+  try {
+    updateTask(task.id, { next_run: advancedNextRun });
+    logger.debug(
+      { taskId: task.id, previousNextRun: task.next_run, advancedNextRun },
+      'Advanced next_run before execution',
+    );
+  } catch (err) {
+    logger.error(
+      { taskId: task.id, err },
+      'Failed to advance next_run, aborting task (will retry next cycle)',
+    );
+    return;
+  }
 
   let result: string | null = null;
   let error: string | null = null;
@@ -129,6 +143,15 @@ async function runTask(
   const sessions = deps.getSessions();
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+
+  // Clear reply context so scheduled tasks don't reply to stale messages
+  const groupIpcDir = resolveGroupIpcPath(task.group_folder);
+  const replyContextFile = path.join(groupIpcDir, 'reply_context.json');
+  try {
+    fs.unlinkSync(replyContextFile);
+  } catch {
+    // Ignore if file does not exist
+  }
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
@@ -160,13 +183,25 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
+          logger.info(
+            { taskId: task.id, chatJid: task.chat_jid, resultLength: streamedOutput.result.length },
+            'Task produced result, sending to primary chat',
+          );
           // Forward result to primary chat
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          try {
+            await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          } catch (err) {
+            logger.error(
+              { taskId: task.id, chatJid: task.chat_jid, resultLength: streamedOutput.result.length, err },
+              'Failed to send task result to primary chat (message lost)',
+            );
+          }
           // Forward to extra subscribers
           const extraJids = parseExtraChatJids(task.extra_chat_jids);
           for (const jid of extraJids) {
             try {
               await deps.sendMessage(jid, streamedOutput.result);
+              logger.debug({ taskId: task.id, jid }, 'Task result forwarded to extra subscriber');
             } catch (err) {
               logger.error({ taskId: task.id, jid, err }, 'Failed to forward task result to extra chat');
             }
@@ -174,11 +209,16 @@ async function runTask(
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
+          logger.debug({ taskId: task.id }, 'Task container reported success, scheduling close');
           deps.queue.notifyTaskIdle(task.chat_jid);
           scheduleClose();
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
+          logger.warn(
+            { taskId: task.id, error },
+            'Task container reported error via streaming output',
+          );
         }
       },
     );
@@ -193,25 +233,38 @@ async function runTask(
     }
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
-      'Task completed',
+      {
+        taskId: task.id,
+        durationMs: Date.now() - startTime,
+        status: error ? 'error' : 'success',
+        hasResult: !!result,
+        resultLength: result?.length || 0,
+      },
+      error ? 'Task completed with error' : 'Task completed successfully',
     );
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
     error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Task failed');
+    logger.error(
+      { taskId: task.id, durationMs: Date.now() - startTime, error },
+      'Task failed with exception',
+    );
   }
 
   const durationMs = Date.now() - startTime;
 
-  logTaskRun({
-    task_id: task.id,
-    run_at: new Date().toISOString(),
-    duration_ms: durationMs,
-    status: error ? 'error' : 'success',
-    result,
-    error,
-  });
+  try {
+    logTaskRun({
+      task_id: task.id,
+      run_at: new Date().toISOString(),
+      duration_ms: durationMs,
+      status: error ? 'error' : 'success',
+      result,
+      error,
+    });
+  } catch (err) {
+    logger.error({ taskId: task.id, err }, 'Failed to write task run log to database');
+  }
 
   let nextRun: string | null = null;
   if (task.schedule_type === 'cron') {
@@ -230,7 +283,14 @@ async function runTask(
     : result
       ? result.slice(0, 200)
       : 'Completed';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  try {
+    updateTaskAfterRun(task.id, nextRun, resultSummary);
+  } catch (err) {
+    logger.error(
+      { taskId: task.id, nextRun, err },
+      'Failed to save task result to database (next_run may be stale)',
+    );
+  }
 }
 
 let schedulerRunning = false;
@@ -245,12 +305,45 @@ export function triggerSchedulerDrain(): void {
   drainRequested = true;
 }
 
+/**
+ * Recover tasks that were interrupted by a process restart.
+ *
+ * A `once` task with next_run='9999-...' and last_run=null was picked up
+ * by the scheduler (which advances next_run before execution) but never
+ * finished — the process died before updateTaskAfterRun() was called.
+ * Reset next_run to now so the scheduler re-executes it.
+ */
+function recoverStuckTasks(): void {
+  const tasks = getAllTasks();
+  for (const task of tasks) {
+    if (
+      task.status === 'active' &&
+      task.last_run === null &&
+      task.next_run !== null &&
+      task.next_run > '9990'
+    ) {
+      const now = new Date().toISOString();
+      updateTask(task.id, { next_run: now });
+      logger.info(
+        { taskId: task.id, scheduleType: task.schedule_type },
+        'Recovered stuck task — reset next_run for re-execution',
+      );
+    }
+  }
+}
+
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
   if (schedulerRunning) {
     logger.debug('Scheduler loop already running, skipping duplicate start');
     return;
   }
   schedulerRunning = true;
+
+  // Recover stuck tasks: a `once` task with next_run=9999 and no last_run
+  // was interrupted mid-execution (e.g. by /restart). Reset it so the
+  // scheduler picks it up again.
+  recoverStuckTasks();
+
   logger.info('Scheduler loop started');
 
   const loop = async () => {
@@ -263,10 +356,22 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       for (const task of dueTasks) {
         // Re-check task status in case it was paused/cancelled
         const currentTask = getTaskById(task.id);
-        if (!currentTask || currentTask.status !== 'active') {
+        if (!currentTask) {
+          logger.warn({ taskId: task.id }, 'Due task disappeared from database, skipping');
+          continue;
+        }
+        if (currentTask.status !== 'active') {
+          logger.debug(
+            { taskId: task.id, status: currentTask.status },
+            'Due task is no longer active, skipping',
+          );
           continue;
         }
 
+        logger.info(
+          { taskId: currentTask.id, chatJid: currentTask.chat_jid, scheduleType: currentTask.schedule_type },
+          'Enqueuing due task',
+        );
         deps.queue.enqueueTask(
           currentTask.chat_jid,
           currentTask.id,
@@ -278,6 +383,9 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
     }
 
     const delay = drainRequested ? 0 : SCHEDULER_POLL_INTERVAL;
+    if (drainRequested) {
+      logger.debug('Scheduler drain requested, checking for tasks immediately');
+    }
     drainRequested = false;
     setTimeout(loop, delay);
   };

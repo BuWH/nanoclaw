@@ -50,10 +50,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
     // Scan all group IPC directories (identity determined by directory)
     let groupFolders: string[];
     try {
-      groupFolders = fs.readdirSync(ipcBaseDir).filter((f) => {
-        const stat = fs.statSync(path.join(ipcBaseDir, f));
-        return stat.isDirectory() && f !== 'errors';
-      });
+      groupFolders = fs.readdirSync(ipcBaseDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name !== 'errors')
+        .map((entry) => entry.name);
     } catch (err) {
       logger.error({ err }, 'Error reading IPC base directory');
       setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
@@ -88,13 +87,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   await deps.setTyping(data.chatJid, false);
                   // Route through pool bot if sender is specified and target is Telegram
                   if (data.sender && data.chatJid.startsWith('tg:')) {
-                    await sendPoolMessage(
+                    const sent = await sendPoolMessage(
                       data.chatJid,
                       data.text,
                       data.sender,
                       sourceGroup,
                       data.replyToMessageId,
                     );
+                    // Fall back to main bot if no pool bots available
+                    if (!sent) {
+                      await deps.sendMessage(data.chatJid, data.text, data.replyToMessageId);
+                    }
                   } else {
                     await deps.sendMessage(data.chatJid, data.text, data.replyToMessageId);
                   }
@@ -141,6 +144,24 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(tasksDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              const type = data.type as string;
+
+              // X integration requests are fire-and-forget: delete the IPC
+              // file immediately and run the (potentially slow) script in the
+              // background.  Results are written to x_results/ for the
+              // container to poll — blocking the IPC loop would stall message
+              // delivery and Telegram bot commands.
+              if (type?.startsWith('x_')) {
+                fs.unlinkSync(filePath);
+                handleXIpc(data, sourceGroup, isMain, DATA_DIR).catch((err) => {
+                  logger.error(
+                    { file, sourceGroup, err },
+                    'Background X IPC handler error',
+                  );
+                });
+                continue;
+              }
+
               // Pass source group identity to processTaskIpc for authorization
               const result = await processTaskIpc(data, sourceGroup, isMain, deps);
               fs.unlinkSync(filePath);
@@ -306,26 +327,45 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
-        createTask({
-          id: taskId,
-          group_folder: targetFolder,
-          chat_jid: targetJid,
-          prompt: data.prompt,
-          schedule_type: scheduleType,
-          schedule_value: data.schedule_value,
-          context_mode: contextMode,
-          next_run: nextRun,
-          status: 'active',
-          created_at: new Date().toISOString(),
-        });
+        try {
+          createTask({
+            id: taskId,
+            group_folder: targetFolder,
+            chat_jid: targetJid,
+            prompt: data.prompt,
+            schedule_type: scheduleType,
+            schedule_value: data.schedule_value,
+            context_mode: contextMode,
+            next_run: nextRun,
+            status: 'active',
+            created_at: new Date().toISOString(),
+          });
+        } catch (err) {
+          logger.error(
+            { taskId, sourceGroup, targetFolder, err },
+            'Failed to create task in database (task will be lost)',
+          );
+          break;
+        }
         logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
+          { taskId, sourceGroup, targetFolder, contextMode, scheduleType, nextRun, isBackground: !!data.isBackground },
           'Task created via IPC',
         );
 
         // Background tasks should be picked up immediately, not after 60s
         if (data.isBackground) {
-          deps.triggerSchedulerDrain?.();
+          if (deps.triggerSchedulerDrain) {
+            logger.info(
+              { taskId, sourceGroup },
+              'Background task: triggering immediate scheduler drain',
+            );
+            deps.triggerSchedulerDrain();
+          } else {
+            logger.warn(
+              { taskId, sourceGroup },
+              'Background task created but triggerSchedulerDrain not available (will wait up to 60s)',
+            );
+          }
         }
       }
       break;

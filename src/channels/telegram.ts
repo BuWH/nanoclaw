@@ -7,6 +7,7 @@ import {
   OnChatMetadata,
   OnInboundMessage,
   RegisteredGroup,
+  ScheduledTask,
 } from '../types.js';
 
 /**
@@ -53,11 +54,24 @@ export function toTelegramHtml(text: string): string {
   return html;
 }
 
+export interface QueueStatusEntry {
+  groupJid: string;
+  activeMessage: boolean;
+  idleWaiting: boolean;
+  pendingMessages: boolean;
+  activeTask: boolean;
+  pendingTaskCount: number;
+  messageContainerName: string | null;
+  taskContainerName: string | null;
+}
+
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   onRestart?: () => Promise<void>;
+  getScheduledTasks?: () => ScheduledTask[];
+  getQueueStatus?: () => QueueStatusEntry[];
 }
 
 export class TelegramChannel implements Channel {
@@ -108,10 +122,118 @@ export class TelegramChannel implements Channel {
       setTimeout(() => this.opts.onRestart!(), 500);
     });
 
+    // Command to list scheduled tasks
+    this.bot.command('tasks', (ctx) => {
+      if (!this.opts.getScheduledTasks) {
+        ctx.reply('定时任务功能不可用');
+        return;
+      }
+
+      const allTasks = this.opts.getScheduledTasks();
+      // Hide completed one-off tasks — they're historical noise
+      const tasks = allTasks.filter(
+        (t) => !(t.schedule_type === 'once' && t.status === 'completed'),
+      );
+      if (tasks.length === 0) {
+        ctx.reply('当前没有定时任务');
+        return;
+      }
+
+      const groups = this.opts.registeredGroups();
+      const lines = tasks.map((t) => {
+        const statusIcon =
+          t.status === 'active' ? '▶' : t.status === 'paused' ? '⏸' : '✓';
+        const groupName =
+          Object.values(groups).find((g) => g.folder === t.group_folder)
+            ?.name || t.group_folder;
+        const scheduleDesc = formatSchedule(t);
+        const promptPreview =
+          t.prompt.length > 40 ? `${t.prompt.slice(0, 40)}...` : t.prompt;
+        const lastRunInfo = t.last_run
+          ? `\n    上次: ${formatTime(t.last_run)}`
+          : '';
+        const nextRunInfo =
+          t.next_run && t.next_run < '9999'
+            ? `\n    下次: ${formatTime(t.next_run)}`
+            : '';
+        return `${statusIcon} <b>${promptPreview}</b>\n    ID: <code>${t.id}</code>\n    分组: ${groupName} | ${scheduleDesc}${lastRunInfo}${nextRunInfo}`;
+      });
+
+      const header = `<b>定时任务列表</b> (${tasks.length} 个)\n\n`;
+      const body = lines.join('\n\n');
+      ctx.reply(header + body, { parse_mode: 'HTML' }).catch(() => {
+        // Fallback to plain text if HTML fails
+        const plain = tasks
+          .map(
+            (t) =>
+              `${t.status === 'active' ? '▶' : t.status === 'paused' ? '⏸' : '✓'} ${t.prompt.slice(0, 40)} [${t.schedule_type}:${t.schedule_value}]`,
+          )
+          .join('\n');
+        ctx.reply(`定时任务列表 (${tasks.length} 个)\n\n${plain}`);
+      });
+    });
+
+    // Command to show background task execution status
+    this.bot.command('status', (ctx) => {
+      if (!this.opts.getQueueStatus) {
+        ctx.reply('状态查询不可用');
+        return;
+      }
+
+      const entries = this.opts.getQueueStatus();
+      const groups = this.opts.registeredGroups();
+
+      if (entries.length === 0) {
+        ctx.reply('当前没有正在运行或排队的任务');
+        return;
+      }
+
+      const lines = entries.map((e) => {
+        const group = groups[e.groupJid];
+        const name = group?.name || e.groupJid;
+
+        const parts: string[] = [];
+        if (e.activeMessage) {
+          parts.push(
+            e.idleWaiting ? '💬 消息容器 (空闲等待中)' : '💬 消息容器 (运行中)',
+          );
+        }
+        if (e.pendingMessages) {
+          parts.push('📨 有待处理消息');
+        }
+        if (e.activeTask) {
+          parts.push('⚙️ 后台任务 (运行中)');
+        }
+        if (e.pendingTaskCount > 0) {
+          parts.push(`📋 ${e.pendingTaskCount} 个任务排队中`);
+        }
+
+        return `<b>${name}</b>\n    ${parts.join('\n    ')}`;
+      });
+
+      const header = `<b>执行状态</b>\n\n`;
+      ctx.reply(header + lines.join('\n\n'), { parse_mode: 'HTML' }).catch(() => {
+        const plain = entries
+          .map((e) => {
+            const group = groups[e.groupJid];
+            const name = group?.name || e.groupJid;
+            const status: string[] = [];
+            if (e.activeMessage) status.push(e.idleWaiting ? '消息(空闲)' : '消息(运行)');
+            if (e.activeTask) status.push('任务(运行)');
+            if (e.pendingTaskCount > 0) status.push(`${e.pendingTaskCount}排队`);
+            return `${name}: ${status.join(', ')}`;
+          })
+          .join('\n');
+        ctx.reply(`执行状态\n\n${plain}`);
+      });
+    });
+
     // Set bot menu commands so they appear in Telegram's UI
     this.bot.api.setMyCommands([
-      { command: 'restart', description: '重启服务器' },
+      { command: 'tasks', description: '查看定时任务列表' },
+      { command: 'status', description: '查看后台任务执行状态' },
       { command: 'ping', description: '检查机器人是否在线' },
+      { command: 'restart', description: '重启服务器' },
       { command: 'chatid', description: '获取当前聊天的注册 ID' },
     ]).catch((err) => {
       logger.warn({ err }, 'Failed to set bot commands menu');
@@ -354,6 +476,41 @@ export class TelegramChannel implements Channel {
   }
 }
 
+/** Format a scheduled task's schedule into a readable string. */
+function formatSchedule(task: ScheduledTask): string {
+  switch (task.schedule_type) {
+    case 'cron':
+      return `Cron: ${task.schedule_value}`;
+    case 'interval': {
+      const ms = parseInt(task.schedule_value, 10);
+      if (ms >= 86400000) return `每 ${Math.round(ms / 86400000)} 天`;
+      if (ms >= 3600000) return `每 ${Math.round(ms / 3600000)} 小时`;
+      if (ms >= 60000) return `每 ${Math.round(ms / 60000)} 分钟`;
+      return `每 ${Math.round(ms / 1000)} 秒`;
+    }
+    case 'once':
+      return '一次性';
+    default:
+      return task.schedule_type;
+  }
+}
+
+/** Format an ISO timestamp into a short localized string (Asia/Shanghai). */
+function formatTime(iso: string): string {
+  try {
+    const date = new Date(iso);
+    return date.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
+}
+
 // Bot pool for agent teams: send-only Api instances (no polling)
 const poolApis: Api[] = [];
 // Maps "{groupFolder}:{senderName}" -> pool Api index for stable assignment
@@ -395,11 +552,11 @@ export async function sendPoolMessage(
   sender: string,
   groupFolder: string,
   replyToMessageId?: string,
-): Promise<void> {
+): Promise<boolean> {
   if (poolApis.length === 0) {
-    // No pool bots available — cannot send via pool
+    // No pool bots available — caller should fall back to main bot
     logger.warn({ sender, chatId }, 'No pool bots available, skipping pool message');
-    return;
+    return false;
   }
 
   const key = `${groupFolder}:${sender}`;
@@ -453,7 +610,9 @@ export async function sendPoolMessage(
       }
     }
     logger.info({ chatId, sender, poolIndex: idx, length: text.length }, 'Pool message sent');
+    return true;
   } catch (err) {
     logger.error({ chatId, sender, err }, 'Failed to send pool message');
+    return false;
   }
 }
