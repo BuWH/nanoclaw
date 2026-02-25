@@ -13,7 +13,12 @@ CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 echo "Building NanoClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
-${CONTAINER_RUNTIME} build -t "${IMAGE_NAME}:${TAG}" .
+# Invalidate COPY cache by injecting a build arg with the current timestamp.
+# Without this, BuildKit may re-use a stale COPY layer even when source files
+# have changed (the build context hash is volume-cached across builds).
+${CONTAINER_RUNTIME} build \
+  --build-arg CACHE_BUST="$(date +%s)" \
+  -t "${IMAGE_NAME}:${TAG}" .
 
 echo ""
 echo "Build complete!"

@@ -1,6 +1,8 @@
 import { Api, Bot } from 'grammy';
+import fs from 'fs';
+import path from 'path';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, DATA_DIR, TRIGGER_PATTERN } from '../config.js';
 import { logger } from '../logger.js';
 
 /**
@@ -360,7 +362,61 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    // Handle photo messages — download the image and store with a reference
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      const caption = ctx.message.caption || '';
+      const msgId = ctx.message.message_id.toString();
+
+      // Download the highest-resolution photo
+      let imagePath: string | undefined;
+      try {
+        const photos = ctx.message.photo;
+        const largest = photos[photos.length - 1];
+        const file = await ctx.api.getFile(largest.file_id);
+        const url = `https://api.telegram.org/file/bot${this.botToken}/` + file.file_path;
+
+        const response = await fetch(url);
+        if (response.ok) {
+          const mediaDir = path.join(DATA_DIR, 'media');
+          fs.mkdirSync(mediaDir, { recursive: true });
+          const filename = `${chatJid.replace(':', '_')}-${msgId}.jpg`;
+          const filePath = path.join(mediaDir, filename);
+          const buffer = Buffer.from(await response.arrayBuffer());
+          fs.writeFileSync(filePath, buffer);
+          imagePath = filename;
+          logger.info({ chatJid, msgId, size: buffer.length }, 'Photo downloaded');
+        }
+      } catch (err) {
+        logger.warn({ chatJid, msgId, err }, 'Failed to download photo');
+      }
+
+      this.opts.onChatMetadata(chatJid, timestamp);
+      this.opts.onMessage(chatJid, {
+        id: msgId,
+        chat_jid: chatJid,
+        sender: ctx.from?.id?.toString() || '',
+        sender_name: senderName,
+        content: caption || '[Photo]',
+        timestamp,
+        is_from_me: false,
+        image_path: imagePath,
+      });
+
+      logger.info(
+        { chatJid, sender: senderName, hasImage: !!imagePath },
+        'Telegram photo message stored',
+      );
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) =>
       storeNonText(ctx, '[Voice message]'),

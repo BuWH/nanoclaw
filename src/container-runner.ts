@@ -12,6 +12,7 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
+  FIRST_OUTPUT_TIMEOUT,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   TIMEZONE,
@@ -36,6 +37,8 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  /** Base64-encoded images to include with the prompt */
+  images?: Array<{ base64: string; media_type: string }>;
 }
 
 export interface ContainerOutput {
@@ -181,9 +184,10 @@ function buildVolumeMounts(
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
+  // Always sync from source to pick up code updates (e.g., image support).
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
   const groupAgentRunnerDir = path.join(DATA_DIR, 'sessions', group.folder, 'agent-runner-src');
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
+  if (fs.existsSync(agentRunnerSrc)) {
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
   }
   mounts.push({
@@ -360,6 +364,11 @@ export async function runContainerAgent(
               newSessionId = parsed.newSessionId;
             }
             hadStreamingOutput = true;
+            // First output received — cancel the first-output timeout
+            if (firstOutputTimer) {
+              clearTimeout(firstOutputTimer);
+              firstOutputTimer = null;
+            }
             // Activity detected — reset the hard timeout
             resetTimeout();
             logger.debug(
@@ -438,8 +447,26 @@ export async function runContainerAgent(
       timeout = setTimeout(killOnTimeout, timeoutMs);
     };
 
+    // First-output timeout: kill early if no OUTPUT_START_MARKER is received
+    // within the first-output window. Prevents stuck containers from running
+    // for the full hard timeout when they can't process the message at all.
+    const firstOutputTimeoutMs = group.containerConfig?.firstOutputTimeout || FIRST_OUTPUT_TIMEOUT;
+    let firstOutputTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      if (!hadStreamingOutput) {
+        logger.error(
+          { group: group.name, containerName, firstOutputTimeoutMs },
+          'Container produced no output within first-output timeout, killing',
+        );
+        killOnTimeout();
+      }
+    }, firstOutputTimeoutMs);
+
     container.on('close', (code) => {
       clearTimeout(timeout);
+      if (firstOutputTimer) {
+        clearTimeout(firstOutputTimer);
+        firstOutputTimer = null;
+      }
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -641,6 +668,10 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
+      if (firstOutputTimer) {
+        clearTimeout(firstOutputTimer);
+        firstOutputTimer = null;
+      }
       logger.error(
         { group: group.name, containerName, isScheduledTask: !!input.isScheduledTask, error: err },
         'Container spawn error',

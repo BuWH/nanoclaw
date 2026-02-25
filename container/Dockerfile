@@ -41,7 +41,8 @@ COPY agent-runner/package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy source code
+# Copy source code (CACHE_BUST invalidates this layer when source changes)
+ARG CACHE_BUST
 COPY agent-runner/ ./
 
 # Build TypeScript

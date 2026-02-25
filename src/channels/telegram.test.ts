@@ -148,7 +148,14 @@ function createMediaCtx(overrides: {
       date: overrides.date ?? Math.floor(Date.now() / 1000),
       message_id: overrides.messageId ?? 1,
       caption: overrides.caption,
+      photo: [
+        { file_id: 'small', width: 90, height: 90 },
+        { file_id: 'large', width: 800, height: 600 },
+      ],
       ...(overrides.extra || {}),
+    },
+    api: {
+      getFile: vi.fn().mockRejectedValue(new Error('test: no download')),
     },
     me: { username: 'andy_ai_bot' },
   };
@@ -528,7 +535,7 @@ describe('TelegramChannel', () => {
   // --- Non-text messages ---
 
   describe('non-text messages', () => {
-    it('stores photo with placeholder', async () => {
+    it('stores photo with placeholder when no caption', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -542,7 +549,7 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('stores photo with caption', async () => {
+    it('stores photo with caption as content', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -552,7 +559,7 @@ describe('TelegramChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: '[Photo] Look at this' }),
+        expect.objectContaining({ content: 'Look at this' }),
       );
     });
 

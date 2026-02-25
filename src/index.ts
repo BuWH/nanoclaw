@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
@@ -131,6 +132,29 @@ export function _setRegisteredGroups(groups: Record<string, RegisteredGroup>): v
 }
 
 /**
+ * Read image files referenced by messages and return as base64 for the container.
+ */
+function collectImages(
+  messages: NewMessage[],
+): Array<{ base64: string; media_type: string }> {
+  const images: Array<{ base64: string; media_type: string }> = [];
+  for (const msg of messages) {
+    if (!msg.image_path) continue;
+    try {
+      const filePath = path.join(DATA_DIR, 'media', msg.image_path);
+      const buffer = fs.readFileSync(filePath);
+      images.push({
+        base64: buffer.toString('base64'),
+        media_type: 'image/jpeg',
+      });
+    } catch (err) {
+      logger.warn({ image_path: msg.image_path, err }, 'Failed to read image file');
+    }
+  }
+  return images;
+}
+
+/**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
  */
@@ -158,6 +182,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages);
   const lastMessageId = missedMessages[0].id;
+
+  // Collect images from messages
+  const images = collectImages(missedMessages);
+  if (images.length > 0) {
+    logger.info({ group: group.name, imageCount: images.length }, 'Collected images for container');
+  }
 
   // Write reply context for the MCP server inside the container
   const groupIpcDir = resolveGroupIpcPath(group.folder);
@@ -194,7 +224,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, images, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
@@ -229,6 +259,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.warn({ group: group.name }, 'Agent error after output was sent, skipping cursor rollback to prevent duplicates');
       return true;
     }
+
+    // If this is already a retry (retryCount >= 1), the same messages caused
+    // the previous failure too.  Advancing the cursor skips the problematic
+    // batch so the system doesn't loop forever on un-processable messages
+    // (e.g. [Photo] without image data).
+    if (queue.getRetryCount(chatJid) >= 1) {
+      logger.error(
+        { group: group.name, messageCount: missedMessages.length },
+        'Consecutive failures for group — skipping problematic messages to break retry loop',
+      );
+      // Cursor was already advanced before running the agent; just keep it.
+      return true;
+    }
+
     // Roll back cursor so retries can re-process these messages
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
@@ -243,6 +287,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  images: Array<{ base64: string; media_type: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
@@ -306,6 +351,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        images: images.length > 0 ? images : undefined,
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder, 'message'),
       wrappedOnOutput,

@@ -30,6 +30,7 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  firstOutputTimeout?: number; // Default: 300000 (5 minutes) — kill if no output marker received
 }
 
 export interface RegisteredGroup {
@@ -50,6 +51,8 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  /** Path to an image file on disk (relative to DATA_DIR/media/) */
+  image_path?: string;
 }
 
 export interface ScheduledTask {

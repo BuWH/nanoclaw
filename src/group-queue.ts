@@ -329,6 +329,11 @@ export class GroupQueue {
     }
   }
 
+  getRetryCount(groupJid: string): number {
+    const state = this.groups.get(groupJid);
+    return state ? state.retryCount : 0;
+  }
+
   private scheduleRetry(groupJid: string, state: GroupState): void {
     state.retryCount++;
     if (state.retryCount > MAX_RETRIES) {
