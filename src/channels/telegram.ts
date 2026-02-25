@@ -2,6 +2,30 @@ import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { logger } from '../logger.js';
+
+/**
+ * Timeout for outbound Telegram API calls (sendMessage, sendChatAction, etc.).
+ *
+ * grammY defaults to 500s which is designed for getUpdates long polling and
+ * large file uploads. For sendMessage this is far too long — a single hung
+ * request blocks the IPC processing loop and makes the bot appear dead.
+ * 30 seconds is generous for a text message; Telegram usually responds in <2s.
+ */
+const SEND_TIMEOUT_MS = 30_000;
+
+/** Race a promise against a timeout. Rejects with a clear error on timeout. */
+function withSendTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Telegram ${label} timed out after ${SEND_TIMEOUT_MS / 1000}s`)),
+      SEND_TIMEOUT_MS,
+    );
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
 import {
   Channel,
   OnChatMetadata,
@@ -406,7 +430,7 @@ export class TelegramChannel implements Channel {
           opts.reply_parameters = { message_id: Number(replyToMessageId) };
         }
         try {
-          await this.bot.api.sendMessage(numericId, chunks[ci], opts);
+          await withSendTimeout(this.bot.api.sendMessage(numericId, chunks[ci], opts), 'sendMessage');
         } catch {
           // Fallback: send as plain text if HTML parsing fails
           logger.debug({ jid }, 'HTML parse failed, falling back to plain text');
@@ -414,7 +438,7 @@ export class TelegramChannel implements Channel {
           if (ci === 0 && replyToMessageId) {
             fallbackOpts.reply_parameters = { message_id: Number(replyToMessageId) };
           }
-          await this.bot.api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts);
+          await withSendTimeout(this.bot.api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts), 'sendMessage');
           break;
         }
       }
@@ -597,7 +621,7 @@ export async function sendPoolMessage(
         if (ci === 0 && replyToMessageId) {
           opts.reply_parameters = { message_id: Number(replyToMessageId) };
         }
-        await api.sendMessage(numericId, chunks[ci], opts);
+        await withSendTimeout(api.sendMessage(numericId, chunks[ci], opts), 'sendMessage(pool)');
       } catch {
         // Fallback: send as plain text if HTML parsing fails
         logger.debug({ chatId, sender }, 'HTML parse failed in pool message, falling back to plain text');
@@ -605,7 +629,7 @@ export async function sendPoolMessage(
         if (ci === 0 && replyToMessageId) {
           fallbackOpts.reply_parameters = { message_id: Number(replyToMessageId) };
         }
-        await api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts);
+        await withSendTimeout(api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts), 'sendMessage(pool)');
         break;
       }
     }
