@@ -18,6 +18,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeQueueStatusSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
@@ -276,6 +277,14 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  // Update queue status snapshot for container to read
+  writeQueueStatusSnapshot(
+    group.folder,
+    isMain,
+    queue.getStatus(),
+    registeredGroups,
+  );
+
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
@@ -298,7 +307,7 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
+      (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder, 'message'),
       wrappedOnOutput,
     );
 
@@ -407,11 +416,16 @@ async function startMessageLoop(): Promise<void> {
               logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
             );
           } else {
+            // Check if a message container is already busy BEFORE enqueuing,
+            // so we only ack when the user genuinely has to wait behind an
+            // earlier conversation — not when this is the first message.
+            const wasBusy = queue.isBusy(chatJid);
+
             // No active container — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);
 
             // Status feedback: let the user know their message is queued
-            if (queue.isBusy(chatJid)) {
+            if (wasBusy) {
               const ackMsgId = messagesToSend[0].id;
               channel.sendMessage(chatJid, '收到，稍等...', ackMsgId).catch((err) =>
                 logger.warn({ chatJid, err }, 'Failed to send queue status'),
@@ -481,6 +495,8 @@ async function main(): Promise<void> {
     const telegram = new TelegramChannel(TELEGRAM_BOT_TOKEN, {
       ...channelOpts,
       onRestart: () => shutdown('restart'),
+      getScheduledTasks: () => getAllTasks(),
+      getQueueStatus: () => queue.getStatus(),
     });
     channels.push(telegram);
     await telegram.connect();
@@ -495,7 +511,7 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder, 'task'),
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) return;
@@ -525,6 +541,8 @@ async function main(): Promise<void> {
       process.exit(0);
     },
     triggerSchedulerDrain,
+    getQueueStatus: () => queue.getStatus(),
+    writeQueueStatusSnapshot,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

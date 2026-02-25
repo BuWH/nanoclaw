@@ -684,6 +684,60 @@ export function writeTasksSnapshot(
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
 }
 
+export interface QueueStatusEntry {
+  groupJid: string;
+  activeMessage: boolean;
+  idleWaiting: boolean;
+  pendingMessages: boolean;
+  activeTask: boolean;
+  pendingTaskCount: number;
+  messageContainerName: string | null;
+  taskContainerName: string | null;
+}
+
+/**
+ * Write queue status snapshot for the container to read.
+ * Main group sees all entries; non-main groups see only their own.
+ * Resolves group JIDs to names using registeredGroups for readability.
+ */
+export function writeQueueStatusSnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  entries: QueueStatusEntry[],
+  registeredGroups: Record<string, { name: string; folder: string }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  // Resolve group JIDs to names and filter by visibility
+  const visibleEntries = entries
+    .filter((e) => {
+      if (isMain) return true;
+      const group = registeredGroups[e.groupJid];
+      return group?.folder === groupFolder;
+    })
+    .map((e) => {
+      const group = registeredGroups[e.groupJid];
+      return {
+        ...e,
+        groupName: group?.name || e.groupJid,
+      };
+    });
+
+  const statusFile = path.join(groupIpcDir, 'queue_status.json');
+  fs.writeFileSync(
+    statusFile,
+    JSON.stringify(
+      {
+        entries: visibleEntries,
+        timestamp: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 export interface AvailableGroup {
   jid: string;
   name: string;

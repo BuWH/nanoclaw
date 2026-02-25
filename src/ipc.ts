@@ -16,6 +16,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 import { handleXIpc } from './x-ipc.js';
+import type { QueueStatusEntry } from './container-runner.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, replyToMessageId?: string) => Promise<void>;
@@ -32,6 +33,13 @@ export interface IpcDeps {
   ) => void;
   restart: () => Promise<void>;
   triggerSchedulerDrain?: () => void;
+  getQueueStatus?: () => QueueStatusEntry[];
+  writeQueueStatusSnapshot?: (
+    groupFolder: string,
+    isMain: boolean,
+    entries: QueueStatusEntry[],
+    registeredGroups: Record<string, { name: string; folder: string }>,
+  ) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -186,6 +194,21 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+    }
+
+    // Write queue status snapshot to all active group IPC dirs so containers
+    // can read real-time execution state via the get_queue_status MCP tool.
+    if (deps.getQueueStatus && deps.writeQueueStatusSnapshot) {
+      const queueEntries = deps.getQueueStatus();
+      const groups = deps.registeredGroups();
+      for (const sourceGroup of groupFolders) {
+        const isMain = sourceGroup === MAIN_GROUP_FOLDER;
+        try {
+          deps.writeQueueStatusSnapshot(sourceGroup, isMain, queueEntries, groups);
+        } catch (err) {
+          logger.debug({ sourceGroup, err }, 'Failed to write queue status snapshot');
+        }
       }
     }
 

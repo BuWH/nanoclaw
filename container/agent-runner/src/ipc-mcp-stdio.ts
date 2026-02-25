@@ -400,6 +400,84 @@ Use available_groups.json to find the JID for a group. The folder name should be
   },
 );
 
+server.tool(
+  'get_queue_status',
+  `Get real-time execution status of all background containers and queued work. Shows:
+- Which groups have active message or task containers running
+- Whether a message container is idle-waiting or actively processing
+- How many tasks are queued for each group
+- Container names for debugging
+
+Use this to check if a background task is still running, or to see the overall system load.`,
+  {},
+  async () => {
+    const statusFile = path.join(IPC_DIR, 'queue_status.json');
+
+    try {
+      if (!fs.existsSync(statusFile)) {
+        return { content: [{ type: 'text' as const, text: 'No queue status available (no active containers).' }] };
+      }
+
+      const data = JSON.parse(fs.readFileSync(statusFile, 'utf-8'));
+      const entries = data.entries || [];
+      const timestamp = data.timestamp || 'unknown';
+
+      if (entries.length === 0) {
+        return { content: [{ type: 'text' as const, text: `No active or queued work. (as of ${timestamp})` }] };
+      }
+
+      const formatted = entries
+        .map(
+          (e: {
+            groupJid: string;
+            groupName: string;
+            activeMessage: boolean;
+            idleWaiting: boolean;
+            pendingMessages: boolean;
+            activeTask: boolean;
+            pendingTaskCount: number;
+            messageContainerName: string | null;
+            taskContainerName: string | null;
+          }) => {
+            const parts: string[] = [`[${e.groupName}]`];
+            if (e.activeMessage) {
+              parts.push(
+                e.idleWaiting
+                  ? '  Message container: idle (waiting for input)'
+                  : '  Message container: running',
+              );
+              if (e.messageContainerName) {
+                parts.push(`  Container: ${e.messageContainerName}`);
+              }
+            }
+            if (e.pendingMessages) {
+              parts.push('  Pending messages: yes');
+            }
+            if (e.activeTask) {
+              parts.push('  Task container: running');
+              if (e.taskContainerName) {
+                parts.push(`  Container: ${e.taskContainerName}`);
+              }
+            }
+            if (e.pendingTaskCount > 0) {
+              parts.push(`  Queued tasks: ${e.pendingTaskCount}`);
+            }
+            return parts.join('\n');
+          },
+        )
+        .join('\n\n');
+
+      return {
+        content: [{ type: 'text' as const, text: `Queue status (as of ${timestamp}):\n\n${formatted}` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading queue status: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 // --- X Integration Tools (main group only) ---
 

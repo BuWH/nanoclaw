@@ -32,6 +32,7 @@ vi.mock('./container-runner.js', () => ({
     return containerOutput;
   }),
   writeTasksSnapshot: vi.fn(),
+  writeQueueStatusSnapshot: vi.fn(),
 }));
 
 vi.mock('fs', async () => {
@@ -121,7 +122,7 @@ describe('task scheduler', () => {
 
     startSchedulerLoop({
       registeredGroups: () => ({
-        [chatJid]: { jid: chatJid, folder: 'main', name: 'Main Group' },
+        [chatJid]: { folder: 'main', name: 'Main Group' } as any,
       }),
       getSessions: () => ({}),
       queue: {
@@ -130,6 +131,7 @@ describe('task scheduler', () => {
         notifyTaskIdle,
         closeStdin,
         notifyIdle,
+        getStatus: vi.fn(() => []),
       } as any,
       onProcess: () => {},
       sendMessage: async () => {},
@@ -191,6 +193,7 @@ describe('task scheduler', () => {
         enqueueTask,
         closeTaskStdin,
         notifyTaskIdle,
+        getStatus: vi.fn(() => []),
       } as any,
       onProcess: () => {},
       sendMessage: async () => {},
@@ -245,6 +248,7 @@ describe('task scheduler', () => {
         enqueueTask,
         closeTaskStdin: vi.fn(),
         notifyTaskIdle: vi.fn(),
+        getStatus: vi.fn(() => []),
       } as any,
       onProcess: () => {},
       sendMessage: async () => {},
@@ -295,6 +299,7 @@ describe('task scheduler', () => {
         enqueueTask,
         closeTaskStdin: vi.fn(),
         notifyTaskIdle: vi.fn(),
+        getStatus: vi.fn(() => []),
       } as any,
       onProcess: () => {},
       sendMessage: async () => {},

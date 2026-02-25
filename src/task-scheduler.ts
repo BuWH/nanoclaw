@@ -11,7 +11,7 @@ import {
 } from './config.js';
 import path from 'path';
 
-import { ContainerOutput, runContainerAgent, writeTasksSnapshot } from './container-runner.js';
+import { ContainerOutput, runContainerAgent, writeQueueStatusSnapshot, writeTasksSnapshot } from './container-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -106,6 +106,14 @@ async function runTask(
       created_at: t.created_at,
       context_mode: t.context_mode,
     })),
+  );
+
+  // Update queue status snapshot for container to read
+  writeQueueStatusSnapshot(
+    task.group_folder,
+    isMain,
+    deps.queue.getStatus(),
+    groups,
   );
 
   // Advance next_run BEFORE running, so a restart won't re-trigger this execution.
