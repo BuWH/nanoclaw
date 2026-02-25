@@ -18,6 +18,35 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+// Control flag: when true, spawn() returns a fake process that exits
+// immediately with code 1. Used by cache integration tests to avoid
+// spawning real long-running scripts (scrape-tweet.ts exists and takes
+// 60s+ in real environments).
+const mockSpawnControl = vi.hoisted(() => ({ enabled: false }));
+
+vi.mock('child_process', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('child_process')>();
+  const realSpawn = mod.spawn;
+  return {
+    ...mod,
+    spawn: (...args: Parameters<typeof mod.spawn>) => {
+      if (mockSpawnControl.enabled) {
+        const { EventEmitter } = require('events');
+        const { Readable, Writable } = require('stream');
+        const proc = new EventEmitter();
+        proc.stdout = new Readable({ read() { this.push(null); } });
+        proc.stderr = new Readable({ read() { this.push(null); } });
+        proc.stdin = new Writable({ write(_c: unknown, _e: unknown, cb: () => void) { cb(); } });
+        proc.pid = 99999;
+        proc.unref = () => {};
+        process.nextTick(() => proc.emit('close', 1));
+        return proc;
+      }
+      return realSpawn(...args);
+    },
+  };
+});
+
 // We do NOT mock child_process or fs here -- runScript tests use real subprocesses
 // to verify process-group kill behavior.
 
@@ -623,9 +652,12 @@ describe('handleXIpc tweet cache', () => {
     fs.mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), { recursive: true });
     // Ensure clean cache
     try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+    // Enable fake spawn so cache-miss tests don't run real scrape-tweet.ts
+    mockSpawnControl.enabled = true;
   });
 
   afterEach(() => {
+    mockSpawnControl.enabled = false;
     try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
     try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
   });
@@ -686,8 +718,7 @@ describe('handleXIpc tweet cache', () => {
     };
     saveCache({ version: 1, tweets: { '9876543210': entry } });
 
-    // This will attempt to spawn a subprocess (which will fail since it's a test),
-    // proving the cache was bypassed
+    // With includeReplies=true, cache should be bypassed and runScript called
     const handled = await handleXIpc(
       {
         type: 'x_scrape_tweet',
@@ -705,7 +736,7 @@ describe('handleXIpc tweet cache', () => {
     const result = JSON.parse(
       fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-replies-bypass.json'), 'utf-8'),
     );
-    // Should NOT have served from cache (subprocess ran and failed in test env)
+    // Should NOT have served from cache (runScript was called instead)
     expect(result.message).not.toContain('[Served from cache]');
   });
 
@@ -742,12 +773,12 @@ describe('handleXIpc tweet cache', () => {
     const result = JSON.parse(
       fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-ttl-expired.json'), 'utf-8'),
     );
-    // Should NOT have served from cache (subprocess ran and failed)
+    // Should NOT have served from cache (runScript was called instead)
     expect(result.message).not.toContain('[Served from cache]');
   });
 
   it('falls through to subprocess on cache miss', async () => {
-    // No cache populated -- should try to spawn subprocess
+    // No cache populated -- runScript should be called
     const handled = await handleXIpc(
       {
         type: 'x_scrape_tweet',
@@ -764,7 +795,7 @@ describe('handleXIpc tweet cache', () => {
     const result = JSON.parse(
       fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-cache-miss.json'), 'utf-8'),
     );
-    // Subprocess will fail in test environment, but it proves no cache was served
+    // Mocked runScript returns failure, proving no cache was served
     expect(result.success).toBe(false);
     expect(result.message).not.toContain('[Served from cache]');
   });
