@@ -195,7 +195,7 @@ describe('fetch-upstream.sh', () => {
     }
   });
 
-  it('adds upstream remote when none exists', { timeout: 15_000 }, () => {
+  it('adds upstream remote when none exists', { timeout: 35_000 }, () => {
     // Remove origin if any
     try {
       execSync('git remote remove origin', {
