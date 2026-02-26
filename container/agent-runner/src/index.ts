@@ -65,6 +65,17 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+const QUERY_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -617,7 +628,11 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}, images: ${currentImages?.length || 0})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, currentImages);
+      const queryResult = await withTimeout(
+        runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, currentImages),
+        QUERY_TIMEOUT_MS,
+        'SDK query',
+      );
       currentImages = undefined; // Only pass images on the first query
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;

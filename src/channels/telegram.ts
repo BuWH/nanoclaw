@@ -331,8 +331,8 @@ export class TelegramChannel implements Channel {
       });
 
       logger.info(
-        { chatJid, chatName, sender: senderName },
-        'Telegram message stored',
+        { chatJid, chatName, sender: senderName, preview: content.slice(0, 200) },
+        'Telegram message received',
       );
     });
 
@@ -413,8 +413,8 @@ export class TelegramChannel implements Channel {
       });
 
       logger.info(
-        { chatJid, sender: senderName, hasImage: !!imagePath },
-        'Telegram photo message stored',
+        { chatJid, sender: senderName, hasImage: !!imagePath, preview: (caption || '[Photo]').slice(0, 200) },
+        'Telegram photo received',
       );
     });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
@@ -498,7 +498,7 @@ export class TelegramChannel implements Channel {
           break;
         }
       }
-      logger.info({ jid, length: text.length }, 'Telegram message sent');
+      logger.info({ jid, length: text.length, preview: text.slice(0, 200) }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
     }
@@ -689,7 +689,7 @@ export async function sendPoolMessage(
         break;
       }
     }
-    logger.info({ chatId, sender, poolIndex: idx, length: text.length }, 'Pool message sent');
+    logger.info({ chatId, sender, poolIndex: idx, length: text.length, preview: text.slice(0, 200) }, 'Pool message sent');
     return true;
   } catch (err) {
     logger.error({ chatId, sender, err }, 'Failed to send pool message');
