@@ -62,10 +62,44 @@ server.tool(
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+    buttons: z
+      .array(
+        z.array(
+          z.object({
+            text: z
+              .string()
+              .describe('Button label text (max 64 bytes for Telegram)'),
+          }),
+        ),
+      )
+      .optional()
+      .describe(
+        'Optional inline buttons. Array of rows, each row is an array of button objects. On Telegram these render as an inline keyboard; other channels show numbered text options. When a user taps a button, the button text is sent as a regular inbound message.',
+      ),
   },
   async (args) => {
+    // Validate button text length (Telegram callback_data limit is 64 bytes)
+    if (args.buttons) {
+      for (const row of args.buttons) {
+        for (const btn of row) {
+          const byteLen = Buffer.byteLength(btn.text, 'utf-8');
+          if (byteLen > 64) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Button text "${btn.text}" is ${byteLen} bytes — Telegram limits callback_data to 64 bytes. Shorten the label.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      }
+    }
+
     const replyToMessageId = getReplyToMessageId();
-    const data: Record<string, string | undefined> = {
+    const data: Record<string, unknown> = {
       type: 'message',
       chatJid,
       text: args.text,
@@ -74,6 +108,10 @@ server.tool(
       replyToMessageId,
       timestamp: new Date().toISOString(),
     };
+
+    if (args.buttons) {
+      data.buttons = args.buttons;
+    }
 
     writeIpcFile(MESSAGES_DIR, data);
 

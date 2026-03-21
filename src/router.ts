@@ -1,4 +1,4 @@
-import { Channel, NewMessage } from './types.js';
+import { ButtonRows, Channel, NewMessage } from './types.js';
 import { formatLocalTime } from './timezone.js';
 
 export function escapeXml(s: string): string {
@@ -50,4 +50,19 @@ export function findChannel(
   jid: string,
 ): Channel | undefined {
   return channels.find((c) => c.ownsJid(jid));
+}
+
+/**
+ * Render inline buttons as numbered text options for channels that
+ * don't support native buttons.
+ */
+export function buttonsToTextFallback(
+  text: string,
+  buttons: ButtonRows,
+): string {
+  const options = buttons
+    .flat()
+    .map((btn, i) => `[${i + 1}] ${btn.text}`)
+    .join('  ');
+  return `${text}\n\n${options}`;
 }

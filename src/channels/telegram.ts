@@ -1,4 +1,4 @@
-import { Api, Bot } from 'grammy';
+import { Api, Bot, InlineKeyboard } from 'grammy';
 import fs from 'fs';
 import path from 'path';
 
@@ -40,6 +40,7 @@ function withSendTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   });
 }
 import {
+  ButtonRows,
   Channel,
   OnChatMetadata,
   OnInboundMessage,
@@ -469,6 +470,84 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
     this.bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
 
+    // Handle inline button clicks — feed button text as a regular inbound message
+    this.bot.on('callback_query:data', async (ctx) => {
+      this.lastUpdateTime = Date.now();
+
+      // Dismiss the loading spinner on the button
+      await ctx.answerCallbackQuery().catch((err) => {
+        logger.debug({ err }, 'Failed to answer callback query');
+      });
+
+      const chatId = ctx.callbackQuery.message?.chat.id;
+      if (!chatId) return;
+      const chatJid = `tg:${chatId}`;
+      const messageId = ctx.callbackQuery.message?.message_id;
+
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const buttonText = ctx.callbackQuery.data;
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id.toString() ||
+        'Unknown';
+      const sender = ctx.from?.id.toString() || '';
+      const timestamp = new Date().toISOString();
+      const msgId = messageId?.toString() || '';
+
+      // Remove the inline keyboard and append the selected option to the
+      // original message so the user can see what they picked.
+      if (messageId) {
+        try {
+          const originalText =
+            (ctx.callbackQuery.message as any)?.text || '';
+          const updatedHtml = toTelegramHtml(
+            `${originalText}\n\n-- ${senderName}: ${buttonText}`,
+          );
+          await this.bot!.api.editMessageText(
+            chatId,
+            messageId,
+            updatedHtml,
+            { parse_mode: 'HTML' },
+          );
+        } catch (err) {
+          // Fallback: just remove the keyboard without changing text
+          logger.debug(
+            { chatJid, messageId, err },
+            'Failed to edit message text after button click, removing keyboard only',
+          );
+          try {
+            await this.bot!.api.editMessageReplyMarkup(chatId, messageId, {
+              reply_markup: { inline_keyboard: [] },
+            });
+          } catch (rmErr) {
+            logger.debug(
+              { chatJid, messageId, err: rmErr },
+              'Failed to remove inline keyboard',
+            );
+          }
+        }
+      }
+
+      this.opts.onChatMetadata(chatJid, timestamp);
+      this.opts.onMessage(chatJid, {
+        id: msgId,
+        chat_jid: chatJid,
+        sender,
+        sender_name: senderName,
+        content: buttonText,
+        timestamp,
+        is_from_me: false,
+      });
+
+      logger.info(
+        { chatJid, sender: senderName, buttonText },
+        'Telegram inline button clicked',
+      );
+    });
+
     // Handle errors gracefully
     this.bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
@@ -615,6 +694,81 @@ export class TelegramChannel implements Channel {
       );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
+    }
+  }
+
+  async sendMessageWithButtons(
+    jid: string,
+    text: string,
+    buttons: ButtonRows,
+    replyToMessageId?: string,
+  ): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const html = toTelegramHtml(text);
+
+      // Build grammY InlineKeyboard from ButtonRows
+      const keyboard = new InlineKeyboard();
+      for (const row of buttons) {
+        for (const btn of row) {
+          keyboard.text(btn.text, btn.text);
+        }
+        keyboard.row();
+      }
+
+      const opts: Record<string, unknown> = {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      };
+      if (replyToMessageId) {
+        opts.reply_parameters = { message_id: Number(replyToMessageId) };
+      }
+
+      try {
+        await withSendTimeout(
+          this.bot.api.sendMessage(numericId, html, opts),
+          'sendMessageWithButtons',
+        );
+      } catch {
+        // Fallback: send as plain text if HTML parsing fails
+        logger.debug(
+          { jid },
+          'HTML parse failed in sendMessageWithButtons, falling back to plain text',
+        );
+        const fallbackOpts: Record<string, unknown> = {
+          reply_markup: keyboard,
+        };
+        if (replyToMessageId) {
+          fallbackOpts.reply_parameters = {
+            message_id: Number(replyToMessageId),
+          };
+        }
+        await withSendTimeout(
+          this.bot.api.sendMessage(
+            numericId,
+            text.slice(0, 4096),
+            fallbackOpts,
+          ),
+          'sendMessageWithButtons',
+        );
+      }
+
+      logger.info(
+        {
+          jid,
+          length: text.length,
+          buttonCount: buttons.flat().length,
+          preview: text.slice(0, 200),
+        },
+        'Telegram message with buttons sent',
+      );
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Telegram message with buttons');
     }
   }
 

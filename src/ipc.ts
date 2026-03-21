@@ -10,6 +10,7 @@ import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
+import type { ButtonRows } from './types.js';
 import { handleXIpc } from './x-ipc.js';
 import type { QueueStatusEntry } from './container-runner.js';
 
@@ -17,6 +18,12 @@ export interface IpcDeps {
   sendMessage: (
     jid: string,
     text: string,
+    replyToMessageId?: string,
+  ) => Promise<void>;
+  sendMessageWithButtons: (
+    jid: string,
+    text: string,
+    buttons: ButtonRows,
     replyToMessageId?: string,
   ) => Promise<void>;
   setTyping: (jid: string, isTyping: boolean) => Promise<void>;
@@ -100,8 +107,19 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 ) {
                   // Stop typing indicator before sending the message
                   await deps.setTyping(data.chatJid, false);
-                  // Route through pool bot if sender is specified and target is Telegram
-                  if (data.sender && data.chatJid.startsWith('tg:')) {
+
+                  // When buttons are present, always use the main bot
+                  // (pool bots are send-only Api instances that can't
+                  // receive callback_query events).
+                  if (data.buttons && Array.isArray(data.buttons)) {
+                    await deps.sendMessageWithButtons(
+                      data.chatJid,
+                      data.text,
+                      data.buttons as ButtonRows,
+                      data.replyToMessageId,
+                    );
+                  } else if (data.sender && data.chatJid.startsWith('tg:')) {
+                    // Route through pool bot if sender is specified and target is Telegram
                     const sent = await sendPoolMessage(
                       data.chatJid,
                       data.text,

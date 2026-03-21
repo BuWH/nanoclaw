@@ -52,7 +52,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { findChannel, formatMessages, formatOutbound, buttonsToTextFallback } from './router.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -65,7 +65,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop, triggerSchedulerDrain } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { ButtonRows, Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { startXHealthCheck } from './x-health.js';
 
@@ -818,6 +818,29 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text, replyToMessageId);
+    },
+    sendMessageWithButtons: (
+      jid: string,
+      text: string,
+      buttons: ButtonRows,
+      replyToMessageId?: string,
+    ) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (channel.sendMessageWithButtons) {
+        return channel.sendMessageWithButtons(
+          jid,
+          text,
+          buttons,
+          replyToMessageId,
+        );
+      }
+      // Fallback: render buttons as numbered text options
+      return channel.sendMessage(
+        jid,
+        buttonsToTextFallback(text, buttons),
+        replyToMessageId,
+      );
     },
     setTyping: async (jid, isTyping) => {
       const channel = findChannel(channels, jid);

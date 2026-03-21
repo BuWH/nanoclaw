@@ -53,6 +53,7 @@ beforeEach(() => {
 
   deps = {
     sendMessage: async () => {},
+    sendMessageWithButtons: async () => {},
     setTyping: async () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {

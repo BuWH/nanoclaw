@@ -80,6 +80,15 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+// --- Inline button types ---
+
+export interface InlineButton {
+  text: string;
+}
+
+/** Array of rows, each row is an array of buttons. */
+export type ButtonRows = InlineButton[][];
+
 // --- Channel abstraction ---
 
 export interface Channel {
@@ -97,6 +106,13 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: send a message with inline buttons (e.g., Telegram inline keyboard).
+  sendMessageWithButtons?(
+    jid: string,
+    text: string,
+    buttons: ButtonRows,
+    replyToMessageId?: string,
+  ): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
