@@ -1,6 +1,6 @@
 # Dependencies
 node_modules/
-
+.npm-cache/
 # Build output
 dist/
 
@@ -22,8 +22,8 @@ groups/global/*
 *.keys.json
 .env
 
-# Worktrees
-.worktrees/
+# Temp files
+.tmp-*
 
 # OS
 .DS_Store

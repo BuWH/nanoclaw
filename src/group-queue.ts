@@ -34,6 +34,7 @@ interface GroupState {
 
   // Task lane
   activeTask: boolean;
+  runningTaskId: string | null;
   pendingTasks: QueuedTask[];
   taskProcess: ChildProcess | null;
   taskContainerName: string | null;
@@ -61,6 +62,7 @@ export class GroupQueue {
         retryCount: 0,
 
         activeTask: false,
+        runningTaskId: null,
         pendingTasks: [],
         taskProcess: null,
         taskContainerName: null,
@@ -122,7 +124,11 @@ export class GroupQueue {
 
     const state = this.getGroup(groupJid);
 
-    // Prevent double-queuing of the same task
+    // Prevent double-queuing: check both pending and currently-running task
+    if (state.runningTaskId === taskId) {
+      logger.debug({ groupJid, taskId }, 'Task already running, skipping');
+      return;
+    }
     if (state.pendingTasks.some((t) => t.id === taskId)) {
       logger.info({ groupJid, taskId }, 'Task already queued, skipping duplicate');
       return;
@@ -157,6 +163,7 @@ export class GroupQueue {
 
     // Run immediately — increment synchronously to prevent concurrency overshoot
     state.activeTask = true;
+    state.runningTaskId = taskId;
     this.activeCount++;
     logger.info(
       { groupJid, taskId, activeCount: this.activeCount },
@@ -295,8 +302,8 @@ export class GroupQueue {
 
   private async runTask(groupJid: string, task: QueuedTask): Promise<void> {
     const state = this.getGroup(groupJid);
-    // activeTask and activeCount are now set synchronously by the caller
-    // to prevent concurrency overshoot.
+    // activeTask, runningTaskId, and activeCount are now set synchronously by
+    // the caller to prevent concurrency overshoot.
 
     logger.info(
       { groupJid, taskId: task.id, activeCount: this.activeCount },
@@ -317,6 +324,7 @@ export class GroupQueue {
       );
     } finally {
       state.activeTask = false;
+      state.runningTaskId = null;
       state.taskProcess = null;
       state.taskContainerName = null;
       state.taskGroupFolder = null;
@@ -380,6 +388,7 @@ export class GroupQueue {
       if (this.activeCount < MAX_CONCURRENT_CONTAINERS) {
         const task = state.pendingTasks.shift()!;
         state.activeTask = true;
+        state.runningTaskId = task.id;
         this.activeCount++;
         logger.info(
           { groupJid, taskId: task.id, activeCount: this.activeCount, remainingTasks: state.pendingTasks.length },
@@ -424,6 +433,7 @@ export class GroupQueue {
       if (state.pendingTasks.length > 0 && !state.activeTask) {
         if (this.activeCount < MAX_CONCURRENT_CONTAINERS) {
           state.activeTask = true;
+          state.runningTaskId = state.pendingTasks[0].id;
           this.activeCount++;
           const task = state.pendingTasks.shift()!;
           this.runTask(nextJid, task).catch((err) =>

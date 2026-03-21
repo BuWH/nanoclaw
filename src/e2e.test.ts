@@ -27,6 +27,7 @@ vi.mock('./config.js', () => ({
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 5000,
+  CREDENTIAL_PROXY_PORT: 3001,
   DATA_DIR: '/tmp/nanoclaw-e2e-data',
   FIRST_OUTPUT_TIMEOUT: 3000,
   GROUPS_DIR: '/tmp/nanoclaw-e2e-groups',
@@ -184,7 +185,7 @@ async function runPipeline(
   }
 
   // 2. Format via real formatMessages
-  const prompt = formatMessages(messages);
+  const prompt = formatMessages(messages, 'Asia/Shanghai');
   const lastMessageId = messages[0].id;
 
   // 3. Run through real container-runner with mocked spawn
