@@ -106,15 +106,6 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Add extra_chat_jids column for broadcasting task results to multiple chats
-  try {
-    database.exec(
-      `ALTER TABLE scheduled_tasks ADD COLUMN extra_chat_jids TEXT`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
   // Add image_path column for messages with attached images
   try {
     database.exec(
@@ -425,7 +416,7 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status' | 'extra_chat_jids'
+      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
     >
   >,
 ): void {
@@ -452,11 +443,6 @@ export function updateTask(
     fields.push('status = ?');
     values.push(updates.status);
   }
-  if (updates.extra_chat_jids !== undefined) {
-    fields.push('extra_chat_jids = ?');
-    values.push(updates.extra_chat_jids);
-  }
-
   if (fields.length === 0) return;
 
   values.push(id);
