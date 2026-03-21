@@ -42,7 +42,11 @@ export async function checkXHealth(): Promise<HealthCheckResult> {
   const result = await runScript('health-check', {}, HEALTH_CHECK_TIMEOUT_MS);
 
   if (result.success) {
-    return { healthy: true, isTransactionIdError: false, message: result.message };
+    return {
+      healthy: true,
+      isTransactionIdError: false,
+      message: result.message,
+    };
   }
 
   const data = result.data as HealthCheckData | undefined;
@@ -59,7 +63,12 @@ export async function checkXHealth(): Promise<HealthCheckResult> {
  * Read the installed version of x-client-transaction-id from node_modules.
  */
 export function getInstalledVersion(): string | null {
-  const pkgPath = path.join(PROJECT_ROOT, 'node_modules', PACKAGE_NAME, 'package.json');
+  const pkgPath = path.join(
+    PROJECT_ROOT,
+    'node_modules',
+    PACKAGE_NAME,
+    'package.json',
+  );
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return pkg.version ?? null;
@@ -123,7 +132,10 @@ export async function runNpmInstall(): Promise<boolean> {
       { cwd: PROJECT_ROOT, timeout: NPM_INSTALL_TIMEOUT_MS },
       (err, _stdout, stderr) => {
         if (err) {
-          logger.error({ err, stderrTail: stderr?.slice(-500) }, 'npm install failed');
+          logger.error(
+            { err, stderrTail: stderr?.slice(-500) },
+            'npm install failed',
+          );
           resolve(false);
           return;
         }

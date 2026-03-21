@@ -216,7 +216,9 @@ describe('updateOverride', () => {
   });
 
   afterEach(() => {
-    try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+    try {
+      fs.rmSync(tmpDir, { recursive: true });
+    } catch {}
   });
 
   it('updates existing override version', () => {
@@ -307,7 +309,10 @@ describe('attemptAutoUpdate', () => {
   it('skips update when already on latest version', async () => {
     // Mock getInstalledVersion via fs.readFileSync (reads real node_modules)
     vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
-      if (typeof p === 'string' && p.includes('x-client-transaction-id/package.json')) {
+      if (
+        typeof p === 'string' &&
+        p.includes('x-client-transaction-id/package.json')
+      ) {
         return JSON.stringify({ version: '0.2.0' });
       }
       return fs.readFileSync.call(fs, p, ...args);
@@ -342,11 +347,18 @@ describe('attemptAutoUpdate', () => {
   it('returns true when update fixes the issue', async () => {
     // First getInstalledVersion reads 0.1.9
     vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
-      if (typeof p === 'string' && p.includes('x-client-transaction-id/package.json')) {
+      if (
+        typeof p === 'string' &&
+        p.includes('x-client-transaction-id/package.json')
+      ) {
         return JSON.stringify({ version: '0.1.9' });
       }
       // For updateOverride, return a real-ish package.json
-      if (typeof p === 'string' && p.endsWith('package.json') && !p.includes('node_modules')) {
+      if (
+        typeof p === 'string' &&
+        p.endsWith('package.json') &&
+        !p.includes('node_modules')
+      ) {
         return JSON.stringify({ name: 'test', overrides: {} }, null, 2);
       }
       return fs.readFileSync.call(fs, p, ...args);
@@ -385,10 +397,17 @@ describe('attemptAutoUpdate', () => {
 
   it('returns false when update does not fix the issue', async () => {
     vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
-      if (typeof p === 'string' && p.includes('x-client-transaction-id/package.json')) {
+      if (
+        typeof p === 'string' &&
+        p.includes('x-client-transaction-id/package.json')
+      ) {
         return JSON.stringify({ version: '0.1.9' });
       }
-      if (typeof p === 'string' && p.endsWith('package.json') && !p.includes('node_modules')) {
+      if (
+        typeof p === 'string' &&
+        p.endsWith('package.json') &&
+        !p.includes('node_modules')
+      ) {
         return JSON.stringify({ name: 'test', overrides: {} }, null, 2);
       }
       return fs.readFileSync.call(fs, p, ...args);
@@ -422,10 +441,17 @@ describe('attemptAutoUpdate', () => {
 
   it('returns false when npm install fails', async () => {
     vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
-      if (typeof p === 'string' && p.includes('x-client-transaction-id/package.json')) {
+      if (
+        typeof p === 'string' &&
+        p.includes('x-client-transaction-id/package.json')
+      ) {
         return JSON.stringify({ version: '0.1.9' });
       }
-      if (typeof p === 'string' && p.endsWith('package.json') && !p.includes('node_modules')) {
+      if (
+        typeof p === 'string' &&
+        p.endsWith('package.json') &&
+        !p.includes('node_modules')
+      ) {
         return JSON.stringify({ name: 'test', overrides: {} }, null, 2);
       }
       return fs.readFileSync.call(fs, p, ...args);
@@ -501,10 +527,17 @@ describe('runXHealthCheck', () => {
 
     // Mock fs for getInstalledVersion and updateOverride
     vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
-      if (typeof p === 'string' && p.includes('x-client-transaction-id/package.json')) {
+      if (
+        typeof p === 'string' &&
+        p.includes('x-client-transaction-id/package.json')
+      ) {
         return JSON.stringify({ version: '0.1.9' });
       }
-      if (typeof p === 'string' && p.endsWith('package.json') && !p.includes('node_modules')) {
+      if (
+        typeof p === 'string' &&
+        p.endsWith('package.json') &&
+        !p.includes('node_modules')
+      ) {
         return JSON.stringify({ name: 'test', overrides: {} }, null, 2);
       }
       return fs.readFileSync.call(fs, p, ...args);

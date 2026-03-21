@@ -29,7 +29,10 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
-import { loadMountAllowlist, validateAdditionalMounts } from './mount-security.js';
+import {
+  loadMountAllowlist,
+  validateAdditionalMounts,
+} from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -119,7 +122,11 @@ function buildVolumeMounts(
             readonly: !root.allowReadWrite,
           });
           logger.info(
-            { hostPath: expandedPath, containerPath: `/workspace/extra/${mountName}`, readonly: !root.allowReadWrite },
+            {
+              hostPath: expandedPath,
+              containerPath: `/workspace/extra/${mountName}`,
+              readonly: !root.allowReadWrite,
+            },
             'Auto-mounted allowlist root for main group',
           );
         }
@@ -250,7 +257,15 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_MODEL', 'GITHUB_TOKEN', 'NOTION_API_KEY', 'TAVILY_API_KEY']);
+  return readEnvFile([
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_BASE_URL',
+    'CLAUDE_CODE_MODEL',
+    'GITHUB_TOKEN',
+    'NOTION_API_KEY',
+    'TAVILY_API_KEY',
+  ]);
 }
 
 function buildContainerArgs(
@@ -372,12 +387,19 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets();
-    const secretKeys = Object.keys(input.secrets).filter((k) => !!input.secrets![k]);
+    const secretKeys = Object.keys(input.secrets).filter(
+      (k) => !!input.secrets![k],
+    );
     try {
       container.stdin.write(JSON.stringify(input));
       container.stdin.end();
       logger.debug(
-        { group: group.name, containerName, secretCount: secretKeys.length, secretKeys },
+        {
+          group: group.name,
+          containerName,
+          secretCount: secretKeys.length,
+          secretKeys,
+        },
         'Secrets written to container stdin',
       );
     } catch (err) {
@@ -450,12 +472,19 @@ export async function runContainerAgent(
             );
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed)).catch((err) => {
-              logger.error(
-                { group: group.name, containerName, status: parsed.status, err },
-                'Error in streaming onOutput callback (result may be lost)',
-              );
-            });
+            outputChain = outputChain
+              .then(() => onOutput(parsed))
+              .catch((err) => {
+                logger.error(
+                  {
+                    group: group.name,
+                    containerName,
+                    status: parsed.status,
+                    err,
+                  },
+                  'Error in streaming onOutput callback (result may be lost)',
+                );
+              });
           } catch (err) {
             logger.warn(
               { group: group.name, error: err },
@@ -523,16 +552,20 @@ export async function runContainerAgent(
     // First-output timeout: kill early if no OUTPUT_START_MARKER is received
     // within the first-output window. Prevents stuck containers from running
     // for the full hard timeout when they can't process the message at all.
-    const firstOutputTimeoutMs = group.containerConfig?.firstOutputTimeout || FIRST_OUTPUT_TIMEOUT;
-    let firstOutputTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      if (!hadStreamingOutput) {
-        logger.error(
-          { group: group.name, containerName, firstOutputTimeoutMs },
-          'Container produced no output within first-output timeout, killing',
-        );
-        killOnTimeout();
-      }
-    }, firstOutputTimeoutMs);
+    const firstOutputTimeoutMs =
+      group.containerConfig?.firstOutputTimeout || FIRST_OUTPUT_TIMEOUT;
+    let firstOutputTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+      () => {
+        if (!hadStreamingOutput) {
+          logger.error(
+            { group: group.name, containerName, firstOutputTimeoutMs },
+            'Container produced no output within first-output timeout, killing',
+          );
+          killOnTimeout();
+        }
+      },
+      firstOutputTimeoutMs,
+    );
 
     container.on('close', (code) => {
       clearTimeout(timeout);
@@ -613,11 +646,7 @@ export async function runContainerAgent(
         // Full input is only included at verbose level to avoid
         // persisting user conversation content on every non-zero exit.
         if (isVerbose) {
-          logLines.push(
-            `=== Input ===`,
-            JSON.stringify(input, null, 2),
-            ``,
-          );
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
         } else {
           logLines.push(
             `=== Input Summary ===`,
@@ -684,27 +713,29 @@ export async function runContainerAgent(
 
       // Streaming mode: wait for output chain to settle, return completion marker
       if (onOutput) {
-        outputChain.then(() => {
-          logger.info(
-            { group: group.name, duration, newSessionId },
-            'Container completed (streaming mode)',
-          );
-          safeResolve({
-            status: 'success',
-            result: null,
-            newSessionId,
+        outputChain
+          .then(() => {
+            logger.info(
+              { group: group.name, duration, newSessionId },
+              'Container completed (streaming mode)',
+            );
+            safeResolve({
+              status: 'success',
+              result: null,
+              newSessionId,
+            });
+          })
+          .catch((err) => {
+            logger.error(
+              { group: group.name, duration, err },
+              'Output chain failed during container completion',
+            );
+            safeResolve({
+              status: 'error',
+              result: null,
+              error: `Output chain error: ${err}`,
+            });
           });
-        }).catch((err) => {
-          logger.error(
-            { group: group.name, duration, err },
-            'Output chain failed during container completion',
-          );
-          safeResolve({
-            status: 'error',
-            result: null,
-            error: `Output chain error: ${err}`,
-          });
-        });
         return;
       }
 
@@ -764,7 +795,12 @@ export async function runContainerAgent(
         firstOutputTimer = null;
       }
       logger.error(
-        { group: group.name, containerName, isScheduledTask: !!input.isScheduledTask, error: err },
+        {
+          group: group.name,
+          containerName,
+          isScheduledTask: !!input.isScheduledTask,
+          error: err,
+        },
         'Container spawn error',
       );
       safeResolve({

@@ -431,6 +431,48 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Build MCP servers config
+  const mcpServers: Record<string, any> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      },
+    },
+  };
+  if (sdkEnv.NOTION_API_KEY) {
+    mcpServers.notion = {
+      command: 'npx',
+      args: ['-y', '@notionhq/notion-mcp-server'],
+      env: {
+        OPENAPI_MCP_HEADERS: JSON.stringify({
+          Authorization: `Bearer ${sdkEnv.NOTION_API_KEY}`,
+          'Notion-Version': '2022-06-28',
+        }),
+      },
+    };
+  }
+  if (sdkEnv.TAVILY_API_KEY) {
+    mcpServers['tavily-search'] = {
+      command: 'npx',
+      args: ['-y', 'tavily-mcp'],
+      env: {
+        TAVILY_API_KEY: sdkEnv.TAVILY_API_KEY,
+      },
+    };
+  }
+  // Things 3 MCP runs on the host as an SSE server (requires macOS AppleScript).
+  // Derive host gateway from ANTHROPIC_BASE_URL which is already set to host.docker.internal.
+  if (containerInput.isMain && process.env.ANTHROPIC_BASE_URL) {
+    try {
+      const host = new URL(process.env.ANTHROPIC_BASE_URL).hostname;
+      mcpServers.things = { type: 'sse', url: `http://${host}:3002/sse` };
+    } catch { /* invalid URL, skip */ }
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -451,44 +493,14 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__notion__*',
-        'mcp__tavily-search__tavily_search'
+        'mcp__tavily-search__tavily_search',
+        ...(containerInput.isMain ? ['mcp__things__*'] : [])
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-        ...(sdkEnv.NOTION_API_KEY ? {
-          notion: {
-            command: 'npx',
-            args: ['-y', '@notionhq/notion-mcp-server'],
-            env: {
-              OPENAPI_MCP_HEADERS: JSON.stringify({
-                Authorization: `Bearer ${sdkEnv.NOTION_API_KEY}`,
-                'Notion-Version': '2022-06-28',
-              }),
-            },
-          },
-        } : {}),
-        ...(sdkEnv.TAVILY_API_KEY ? {
-          'tavily-search': {
-            command: 'npx',
-            args: ['-y', 'tavily-mcp'],
-            env: {
-              TAVILY_API_KEY: sdkEnv.TAVILY_API_KEY,
-            },
-          },
-        } : {}),
-      },
+      mcpServers,
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },

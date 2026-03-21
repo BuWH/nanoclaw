@@ -300,7 +300,12 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Register a process so closeStdin has a groupFolder
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     // Enqueue a task while message container is active but NOT idle
     const taskFn = vi.fn(async () => {});
@@ -335,7 +340,12 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Register process and mark idle
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
     queue.notifyIdle('group1@g.us');
 
     // Clear previous writes, then enqueue a task
@@ -369,7 +379,12 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     // Container becomes idle
     queue.notifyIdle('group1@g.us');
@@ -405,7 +420,12 @@ describe('GroupQueue', () => {
     // Start a task (runs in task lane, no message container)
     queue.enqueueTask('group1@g.us', 'task-1', taskFn);
     await vi.advanceTimersByTimeAsync(10);
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     // sendMessage should return false — no active message container
     const result = queue.sendMessage('group1@g.us', 'hello');
@@ -443,7 +463,12 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Register process for group1
-    queue.registerProcess('group1@g.us', {} as any, 'container-1', 'test-group');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
 
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     writeFileSync.mockClear();
@@ -726,11 +751,23 @@ describe('GroupQueue', () => {
 
     // Register process with lane='message'
     const msgProc = { pid: 1 } as any;
-    queue.registerProcess('group1@g.us', msgProc, 'msg-container', 'msg-folder', 'message');
+    queue.registerProcess(
+      'group1@g.us',
+      msgProc,
+      'msg-container',
+      'msg-folder',
+      'message',
+    );
 
     // Register process with lane='task'
     const taskProc = { pid: 2 } as any;
-    queue.registerProcess('group1@g.us', taskProc, 'task-container', 'task-folder', 'task');
+    queue.registerProcess(
+      'group1@g.us',
+      taskProc,
+      'task-container',
+      'task-folder',
+      'task',
+    );
 
     // Verify they are different objects (not clobbered)
     const groupState = queue['groups'].get('group1@g.us')!;
@@ -773,9 +810,21 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Register message process with groupFolder='msg-folder'
-    queue.registerProcess('group1@g.us', {} as any, 'msg-container', 'msg-folder', 'message');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'msg-container',
+      'msg-folder',
+      'message',
+    );
     // Register task process with groupFolder='task-folder'
-    queue.registerProcess('group1@g.us', {} as any, 'task-container', 'task-folder', 'task');
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'task-container',
+      'task-folder',
+      'task',
+    );
 
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     writeFileSync.mockClear();
@@ -792,7 +841,10 @@ describe('GroupQueue', () => {
 
     // Verify NO call with msg-folder/_close
     const msgCloseWrites = writeFileSync.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && (call[0] as string).includes('msg-folder') && (call[0] as string).endsWith('_close'),
+      (call) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('msg-folder') &&
+        (call[0] as string).endsWith('_close'),
     );
     expect(msgCloseWrites).toHaveLength(0);
 

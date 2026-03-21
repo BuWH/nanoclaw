@@ -64,7 +64,11 @@ vi.mock('grammy', () => ({
   },
 }));
 
-import { TelegramChannel, TelegramChannelOpts, toTelegramHtml } from './telegram.js';
+import {
+  TelegramChannel,
+  TelegramChannelOpts,
+  toTelegramHtml,
+} from './telegram.js';
 
 // --- Test helpers ---
 
@@ -742,8 +746,10 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       // First call (HTML) fails, second call (plain text) succeeds
-      currentBot().api.sendMessage
-        .mockRejectedValueOnce(new Error('Bad Request: can\'t parse entities'))
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce(
+          new Error("Bad Request: can't parse entities"),
+        )
         .mockResolvedValueOnce(undefined);
 
       await channel.sendMessage('tg:100200300', '*Broken <html>*');
@@ -1018,19 +1024,27 @@ describe('toTelegramHtml', () => {
   });
 
   it('converts *bold* to <b>bold</b>', () => {
-    expect(toTelegramHtml('This is *bold* text')).toBe('This is <b>bold</b> text');
+    expect(toTelegramHtml('This is *bold* text')).toBe(
+      'This is <b>bold</b> text',
+    );
   });
 
   it('converts _italic_ to <i>italic</i>', () => {
-    expect(toTelegramHtml('This is _italic_ text')).toBe('This is <i>italic</i> text');
+    expect(toTelegramHtml('This is _italic_ text')).toBe(
+      'This is <i>italic</i> text',
+    );
   });
 
   it('converts ```code``` to <pre>code</pre>', () => {
-    expect(toTelegramHtml('Run ```npm install``` now')).toBe('Run <pre>npm install</pre> now');
+    expect(toTelegramHtml('Run ```npm install``` now')).toBe(
+      'Run <pre>npm install</pre> now',
+    );
   });
 
   it('converts `inline code` to <code>inline code</code>', () => {
-    expect(toTelegramHtml('Use `git status` here')).toBe('Use <code>git status</code> here');
+    expect(toTelegramHtml('Use `git status` here')).toBe(
+      'Use <code>git status</code> here',
+    );
   });
 
   it('handles multiline code blocks', () => {
@@ -1062,6 +1076,8 @@ describe('toTelegramHtml', () => {
 
   it('handles HTML entities inside formatting', () => {
     const input = '*a & b* are _<cool>_';
-    expect(toTelegramHtml(input)).toBe('<b>a &amp; b</b> are <i>&lt;cool&gt;</i>');
+    expect(toTelegramHtml(input)).toBe(
+      '<b>a &amp; b</b> are <i>&lt;cool&gt;</i>',
+    );
   });
 });

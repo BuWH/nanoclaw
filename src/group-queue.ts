@@ -79,7 +79,10 @@ export class GroupQueue {
 
   enqueueMessageCheck(groupJid: string): void {
     if (this.shuttingDown) {
-      logger.warn({ groupJid }, 'Message check enqueue rejected: queue shutting down');
+      logger.warn(
+        { groupJid },
+        'Message check enqueue rejected: queue shutting down',
+      );
       return;
     }
 
@@ -130,7 +133,10 @@ export class GroupQueue {
       return;
     }
     if (state.pendingTasks.some((t) => t.id === taskId)) {
-      logger.info({ groupJid, taskId }, 'Task already queued, skipping duplicate');
+      logger.info(
+        { groupJid, taskId },
+        'Task already queued, skipping duplicate',
+      );
       return;
     }
 
@@ -155,7 +161,12 @@ export class GroupQueue {
         this.waitingGroups.push(groupJid);
       }
       logger.info(
-        { groupJid, taskId, activeCount: this.activeCount, maxConcurrent: MAX_CONCURRENT_CONTAINERS },
+        {
+          groupJid,
+          taskId,
+          activeCount: this.activeCount,
+          maxConcurrent: MAX_CONCURRENT_CONTAINERS,
+        },
         'At concurrency limit, task queued (will run when slot available)',
       );
       return;
@@ -174,7 +185,13 @@ export class GroupQueue {
     );
   }
 
-  registerProcess(groupJid: string, proc: ChildProcess, containerName: string, groupFolder?: string, lane: 'message' | 'task' = 'message'): void {
+  registerProcess(
+    groupJid: string,
+    proc: ChildProcess,
+    containerName: string,
+    groupFolder?: string,
+    lane: 'message' | 'task' = 'message',
+  ): void {
     const state = this.getGroup(groupJid);
     if (lane === 'task') {
       state.taskProcess = proc;
@@ -209,7 +226,12 @@ export class GroupQueue {
     if (!state.activeMessage || !state.messageGroupFolder) return false;
     state.idleWaiting = false; // Agent is about to receive work, no longer idle
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.messageGroupFolder, 'input');
+    const inputDir = path.join(
+      DATA_DIR,
+      'ipc',
+      state.messageGroupFolder,
+      'input',
+    );
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
@@ -230,7 +252,12 @@ export class GroupQueue {
     const state = this.getGroup(groupJid);
     if (!state.activeMessage || !state.messageGroupFolder) return;
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.messageGroupFolder, 'input');
+    const inputDir = path.join(
+      DATA_DIR,
+      'ipc',
+      state.messageGroupFolder,
+      'input',
+    );
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       fs.writeFileSync(path.join(inputDir, '_close'), '');
@@ -330,7 +357,12 @@ export class GroupQueue {
       state.taskGroupFolder = null;
       this.activeCount--;
       logger.debug(
-        { groupJid, taskId: task.id, activeCount: this.activeCount, pendingTasks: state.pendingTasks.length },
+        {
+          groupJid,
+          taskId: task.id,
+          activeCount: this.activeCount,
+          pendingTasks: state.pendingTasks.length,
+        },
         'Task slot released, draining group',
       );
       this.drainGroup(groupJid);
@@ -378,7 +410,10 @@ export class GroupQueue {
         state.pendingMessages = false;
         this.activeCount++;
         this.runForGroup(groupJid, 'drain').catch((err) =>
-          logger.error({ groupJid, err }, 'Unhandled error in runForGroup (drain)'),
+          logger.error(
+            { groupJid, err },
+            'Unhandled error in runForGroup (drain)',
+          ),
         );
       }
     }
@@ -391,15 +426,27 @@ export class GroupQueue {
         state.runningTaskId = task.id;
         this.activeCount++;
         logger.info(
-          { groupJid, taskId: task.id, activeCount: this.activeCount, remainingTasks: state.pendingTasks.length },
+          {
+            groupJid,
+            taskId: task.id,
+            activeCount: this.activeCount,
+            remainingTasks: state.pendingTasks.length,
+          },
           'Draining pending task from queue',
         );
         this.runTask(groupJid, task).catch((err) =>
-          logger.error({ groupJid, taskId: task.id, err }, 'Unhandled error in runTask (drain)'),
+          logger.error(
+            { groupJid, taskId: task.id, err },
+            'Unhandled error in runTask (drain)',
+          ),
         );
       } else {
         logger.debug(
-          { groupJid, activeCount: this.activeCount, pendingTasks: state.pendingTasks.length },
+          {
+            groupJid,
+            activeCount: this.activeCount,
+            pendingTasks: state.pendingTasks.length,
+          },
           'Cannot drain pending tasks: at concurrency limit',
         );
       }
@@ -426,7 +473,10 @@ export class GroupQueue {
         state.pendingMessages = false;
         this.activeCount++;
         this.runForGroup(nextJid, 'drain').catch((err) =>
-          logger.error({ groupJid: nextJid, err }, 'Unhandled error in runForGroup (waiting)'),
+          logger.error(
+            { groupJid: nextJid, err },
+            'Unhandled error in runForGroup (waiting)',
+          ),
         );
       }
 
@@ -437,7 +487,10 @@ export class GroupQueue {
           this.activeCount++;
           const task = state.pendingTasks.shift()!;
           this.runTask(nextJid, task).catch((err) =>
-            logger.error({ groupJid: nextJid, taskId: task.id, err }, 'Unhandled error in runTask (waiting)'),
+            logger.error(
+              { groupJid: nextJid, taskId: task.id, err },
+              'Unhandled error in runTask (waiting)',
+            ),
           );
         }
       }
@@ -508,10 +561,18 @@ export class GroupQueue {
     // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
     for (const [jid, state] of this.groups) {
-      if (state.messageProcess && !state.messageProcess.killed && state.messageContainerName) {
+      if (
+        state.messageProcess &&
+        !state.messageProcess.killed &&
+        state.messageContainerName
+      ) {
         activeContainers.push(state.messageContainerName);
       }
-      if (state.taskProcess && !state.taskProcess.killed && state.taskContainerName) {
+      if (
+        state.taskProcess &&
+        !state.taskProcess.killed &&
+        state.taskContainerName
+      ) {
         activeContainers.push(state.taskContainerName);
       }
     }

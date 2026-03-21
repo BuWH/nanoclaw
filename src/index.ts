@@ -171,7 +171,10 @@ function collectImages(
         media_type: 'image/jpeg',
       });
     } catch (err) {
-      logger.warn({ image_path: msg.image_path, err }, 'Failed to read image file');
+      logger.warn(
+        { image_path: msg.image_path, err },
+        'Failed to read image file',
+      );
     }
   }
   return images;
@@ -219,7 +222,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Collect images from messages
   const images = collectImages(missedMessages);
   if (images.length > 0) {
-    logger.info({ group: group.name, imageCount: images.length }, 'Collected images for container');
+    logger.info(
+      { group: group.name, imageCount: images.length },
+      'Collected images for container',
+    );
   }
 
   // Write reply context for the MCP server inside the container
@@ -260,33 +266,39 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, images, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
-        await channel.setTyping?.(chatJid, false);
-        await channel.sendMessage(chatJid, text, lastMessageId);
-        outputSentToUser = true;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    images,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          await channel.setTyping?.(chatJid, false);
+          await channel.sendMessage(chatJid, text, lastMessageId);
+          outputSentToUser = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
 
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -399,7 +411,13 @@ async function runAgent(
         images: images.length > 0 ? images : undefined,
       },
       (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder, 'message'),
+        queue.registerProcess(
+          chatJid,
+          proc,
+          containerName,
+          group.folder,
+          'message',
+        ),
       wrappedOnOutput,
     );
 
@@ -528,9 +546,11 @@ async function startMessageLoop(): Promise<void> {
             // Status feedback: let the user know their message is queued
             if (wasBusy) {
               const ackMsgId = messagesToSend[0].id;
-              channel.sendMessage(chatJid, '收到，稍等...', ackMsgId).catch((err) =>
-                logger.warn({ chatJid, err }, 'Failed to send queue status'),
-              );
+              channel
+                .sendMessage(chatJid, '收到，稍等...', ackMsgId)
+                .catch((err) =>
+                  logger.warn({ chatJid, err }, 'Failed to send queue status'),
+                );
             }
           }
         }
@@ -790,7 +810,7 @@ async function main(): Promise<void> {
         return;
       }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);  // No reply-to for scheduled tasks
+      if (text) await channel.sendMessage(jid, text); // No reply-to for scheduled tasks
     },
   });
   startIpcWatcher({

@@ -14,7 +14,11 @@ import { handleXIpc } from './x-ipc.js';
 import type { QueueStatusEntry } from './container-runner.js';
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string, replyToMessageId?: string) => Promise<void>;
+  sendMessage: (
+    jid: string,
+    text: string,
+    replyToMessageId?: string,
+  ) => Promise<void>;
   setTyping: (jid: string, isTyping: boolean) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
@@ -54,7 +58,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
     // Scan all group IPC directories (identity determined by directory)
     let groupFolders: string[];
     try {
-      groupFolders = fs.readdirSync(ipcBaseDir, { withFileTypes: true })
+      groupFolders = fs
+        .readdirSync(ipcBaseDir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory() && entry.name !== 'errors')
         .map((entry) => entry.name);
     } catch (err) {
@@ -106,10 +111,18 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     );
                     // Fall back to main bot if no pool bots available
                     if (!sent) {
-                      await deps.sendMessage(data.chatJid, data.text, data.replyToMessageId);
+                      await deps.sendMessage(
+                        data.chatJid,
+                        data.text,
+                        data.replyToMessageId,
+                      );
                     }
                   } else {
-                    await deps.sendMessage(data.chatJid, data.text, data.replyToMessageId);
+                    await deps.sendMessage(
+                      data.chatJid,
+                      data.text,
+                      data.replyToMessageId,
+                    );
                   }
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup, sender: data.sender },
@@ -173,7 +186,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
               }
 
               // Pass source group identity to processTaskIpc for authorization
-              const result = await processTaskIpc(data, sourceGroup, isMain, deps);
+              const result = await processTaskIpc(
+                data,
+                sourceGroup,
+                isMain,
+                deps,
+              );
               fs.unlinkSync(filePath);
               // Execute restart AFTER the file is deleted to prevent restart loops
               if (result === 'restart') {
@@ -207,9 +225,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
       for (const sourceGroup of groupFolders) {
         const isMain = folderIsMain.get(sourceGroup) === true;
         try {
-          deps.writeQueueStatusSnapshot(sourceGroup, isMain, queueEntries, groups);
+          deps.writeQueueStatusSnapshot(
+            sourceGroup,
+            isMain,
+            queueEntries,
+            groups,
+          );
         } catch (err) {
-          logger.debug({ sourceGroup, err }, 'Failed to write queue status snapshot');
+          logger.debug(
+            { sourceGroup, err },
+            'Failed to write queue status snapshot',
+          );
         }
       }
     }
@@ -375,7 +401,15 @@ export async function processTaskIpc(
           break;
         }
         logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode, scheduleType, nextRun, isBackground: !!data.isBackground },
+          {
+            taskId,
+            sourceGroup,
+            targetFolder,
+            contextMode,
+            scheduleType,
+            nextRun,
+            isBackground: !!data.isBackground,
+          },
           'Task created via IPC',
         );
 
@@ -586,10 +620,7 @@ export async function processTaskIpc(
         logger.info({ sourceGroup }, 'Restart requested via IPC');
         return 'restart';
       } else {
-        logger.warn(
-          { sourceGroup },
-          'Unauthorized restart attempt blocked',
-        );
+        logger.warn({ sourceGroup }, 'Unauthorized restart attempt blocked');
       }
       break;
 

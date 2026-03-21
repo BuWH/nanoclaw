@@ -108,9 +108,7 @@ function createSchema(database: Database.Database): void {
 
   // Add image_path column for messages with attached images
   try {
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN image_path TEXT`,
-    );
+    database.exec(`ALTER TABLE messages ADD COLUMN image_path TEXT`);
   } catch {
     /* column already exists */
   }

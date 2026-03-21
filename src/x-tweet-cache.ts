@@ -161,7 +161,9 @@ export function pruneCache(cache: TweetCache): TweetCache {
   const entries = Object.entries(cache.tweets);
 
   // Remove expired entries
-  const valid = entries.filter(([, entry]) => now - entry.cachedAt < CACHE_TTL_MS);
+  const valid = entries.filter(
+    ([, entry]) => now - entry.cachedAt < CACHE_TTL_MS,
+  );
 
   // If still over limit, keep newest
   const sorted = valid.sort(([, a], [, b]) => b.cachedAt - a.cachedAt);
@@ -220,7 +222,10 @@ export function cacheTweetsFromSearch(tweets: readonly SearchTweet[]): void {
     }));
 
   if (entries.length > 0) {
-    logger.info({ count: entries.length }, 'Caching tweets from search results');
+    logger.info(
+      { count: entries.length },
+      'Caching tweets from search results',
+    );
     cacheTweets(entries);
   }
 }
@@ -228,10 +233,16 @@ export function cacheTweetsFromSearch(tweets: readonly SearchTweet[]): void {
 export function cacheTweetsFromProfile(profileData: ProfileData): void {
   // Profile tweets lack IDs, URLs, and metrics -- not cacheable for scrape-tweet lookups.
   // This is a no-op but kept as a hook for future enrichment.
-  logger.debug({ username: profileData.username }, 'Profile tweets lack IDs, skipping cache');
+  logger.debug(
+    { username: profileData.username },
+    'Profile tweets lack IDs, skipping cache',
+  );
 }
 
-export function cacheTweetFromScrape(tweetId: string | null, data: ScrapedTweetData): void {
+export function cacheTweetFromScrape(
+  tweetId: string | null,
+  data: ScrapedTweetData,
+): void {
   if (!tweetId) return;
 
   const now = Date.now();
@@ -263,7 +274,9 @@ export function formatCachedTweet(entry: TweetCacheEntry): string {
   lines.push(`${entry.author} (${entry.handle})`);
   lines.push(entry.content);
   lines.push(`Time: ${entry.timestamp}`);
-  lines.push(`Replies: ${entry.replies} | Reposts: ${entry.retweets} | Likes: ${entry.likes} | Views: ${entry.views}`);
+  lines.push(
+    `Replies: ${entry.replies} | Reposts: ${entry.retweets} | Likes: ${entry.likes} | Views: ${entry.views}`,
+  );
 
   if (entry.quotedTweet) {
     lines.push(`\nQuoting ${entry.quotedTweet.author}:`);

@@ -36,8 +36,19 @@ interface SkillResult {
 const SCRIPT_TIMEOUT_MS = 120_000;
 
 // Run a skill script as subprocess with process-group cleanup on timeout
-export async function runScript(script: string, args: object, timeoutMs = SCRIPT_TIMEOUT_MS): Promise<SkillResult> {
-  const scriptPath = path.join(PROJECT_ROOT, '.claude', 'skills', 'x-integration', 'scripts', `${script}.ts`);
+export async function runScript(
+  script: string,
+  args: object,
+  timeoutMs = SCRIPT_TIMEOUT_MS,
+): Promise<SkillResult> {
+  const scriptPath = path.join(
+    PROJECT_ROOT,
+    '.claude',
+    'skills',
+    'x-integration',
+    'scripts',
+    `${script}.ts`,
+  );
   const tsxBin = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'tsx');
   const startTime = Date.now();
 
@@ -58,20 +69,31 @@ export async function runScript(script: string, args: object, timeoutMs = SCRIPT
 
     let stdout = '';
     let stderr = '';
-    proc.stdout.on('data', (data) => { stdout += data.toString(); });
-    proc.stderr.on('data', (data) => { stderr += data.toString(); });
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
     proc.stdin.write(JSON.stringify(args));
     proc.stdin.end();
 
     const timer = setTimeout(() => {
       const durationMs = Date.now() - startTime;
       // Kill the entire process group (tsx + all children like Chrome)
-      try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+      try {
+        process.kill(-proc.pid!, 'SIGKILL');
+      } catch {
+        proc.kill('SIGKILL');
+      }
       logger.error(
         { script, durationMs, timeoutMs, stderrTail: stderr.slice(-500) },
         'X script timed out',
       );
-      resolve({ success: false, message: `Script timed out after ${timeoutMs / 1000}s` });
+      resolve({
+        success: false,
+        message: `Script timed out after ${timeoutMs / 1000}s`,
+      });
     }, timeoutMs);
 
     proc.on('close', (code) => {
@@ -88,11 +110,20 @@ export async function runScript(script: string, args: object, timeoutMs = SCRIPT
           const parsed: SkillResult = JSON.parse(lines[lines.length - 1]);
           if (code !== 0) {
             logger.warn(
-              { script, code, durationMs, parsed: parsed.message?.slice(0, 200), stderrTail: stderr.slice(-300) },
+              {
+                script,
+                code,
+                durationMs,
+                parsed: parsed.message?.slice(0, 200),
+                stderrTail: stderr.slice(-300),
+              },
               'X script exited non-zero but produced parseable output',
             );
           } else {
-            logger.debug({ script, durationMs, success: parsed.success }, 'X script completed');
+            logger.debug(
+              { script, durationMs, success: parsed.success },
+              'X script completed',
+            );
           }
           resolve(parsed);
           return;
@@ -103,7 +134,13 @@ export async function runScript(script: string, args: object, timeoutMs = SCRIPT
 
       if (code !== 0) {
         logger.error(
-          { script, code, durationMs, stdoutTail: stdout.slice(-300), stderrTail: stderr.slice(-500) },
+          {
+            script,
+            code,
+            durationMs,
+            stdoutTail: stdout.slice(-300),
+            stderrTail: stderr.slice(-500),
+          },
           'X script crashed with no parseable output',
         );
         resolve({
@@ -124,16 +161,27 @@ export async function runScript(script: string, args: object, timeoutMs = SCRIPT
       clearTimeout(timer);
       const durationMs = Date.now() - startTime;
       logger.error({ script, durationMs, err }, 'X script spawn error');
-      resolve({ success: false, message: `Failed to spawn ${script}: ${err.message}` });
+      resolve({
+        success: false,
+        message: `Failed to spawn ${script}: ${err.message}`,
+      });
     });
   });
 }
 
 // Write result to IPC results directory
-function writeResult(dataDir: string, sourceGroup: string, requestId: string, result: SkillResult): void {
+function writeResult(
+  dataDir: string,
+  sourceGroup: string,
+  requestId: string,
+  result: SkillResult,
+): void {
   const resultsDir = path.join(dataDir, 'ipc', sourceGroup, 'x_results');
   fs.mkdirSync(resultsDir, { recursive: true });
-  fs.writeFileSync(path.join(resultsDir, `${requestId}.json`), JSON.stringify(result));
+  fs.writeFileSync(
+    path.join(resultsDir, `${requestId}.json`),
+    JSON.stringify(result),
+  );
 }
 
 /**
@@ -193,7 +241,10 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing tweetUrl or content' };
         break;
       }
-      result = await runScript('reply', { tweetUrl: data.tweetUrl, content: data.content });
+      result = await runScript('reply', {
+        tweetUrl: data.tweetUrl,
+        content: data.content,
+      });
       break;
 
     case 'x_retweet':
@@ -209,7 +260,10 @@ export async function handleXIpc(
         result = { success: false, message: 'Missing tweetUrl or comment' };
         break;
       }
-      result = await runScript('quote', { tweetUrl: data.tweetUrl, comment: data.comment });
+      result = await runScript('quote', {
+        tweetUrl: data.tweetUrl,
+        comment: data.comment,
+      });
       break;
 
     case 'x_scrape_tweet':
@@ -224,7 +278,11 @@ export async function handleXIpc(
           const cached = getCachedTweet(tweetId);
           if (cached) {
             logger.info({ tweetId, requestId }, 'Tweet cache hit');
-            result = { success: true, message: formatCachedTweet(cached), data: cached };
+            result = {
+              success: true,
+              message: formatCachedTweet(cached),
+              data: cached,
+            };
             break;
           }
         }
@@ -256,7 +314,11 @@ export async function handleXIpc(
 
     case 'x_search_tweets':
       if (!data.query) {
-        result = { success: false, message: 'Missing query parameter. Provide a search query to find tweets.' };
+        result = {
+          success: false,
+          message:
+            'Missing query parameter. Provide a search query to find tweets.',
+        };
         break;
       }
       result = await runScript('search-tweets', {

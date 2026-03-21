@@ -166,7 +166,9 @@ async function runTask(
   // cron/interval tasks will run again at the next scheduled time.
   let advancedNextRun: string | null = null;
   if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, { tz: TIMEZONE });
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
     advancedNextRun = interval.next().toISOString();
   } else if (task.schedule_type === 'interval') {
     const ms = parseInt(task.schedule_value, 10);
@@ -237,7 +239,11 @@ async function runTask(
         if (streamedOutput.result) {
           result = streamedOutput.result;
           logger.info(
-            { taskId: task.id, chatJid: task.chat_jid, resultLength: streamedOutput.result.length },
+            {
+              taskId: task.id,
+              chatJid: task.chat_jid,
+              resultLength: streamedOutput.result.length,
+            },
             'Task produced result, sending to primary chat',
           );
           // Forward result to primary chat
@@ -245,14 +251,22 @@ async function runTask(
             await deps.sendMessage(task.chat_jid, streamedOutput.result);
           } catch (err) {
             logger.error(
-              { taskId: task.id, chatJid: task.chat_jid, resultLength: streamedOutput.result.length, err },
+              {
+                taskId: task.id,
+                chatJid: task.chat_jid,
+                resultLength: streamedOutput.result.length,
+                err,
+              },
               'Failed to send task result to primary chat (message lost)',
             );
           }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
-          logger.debug({ taskId: task.id }, 'Task container reported success, scheduling close');
+          logger.debug(
+            { taskId: task.id },
+            'Task container reported success, scheduling close',
+          );
           deps.queue.notifyTaskIdle(task.chat_jid);
           scheduleClose();
         }
@@ -306,7 +320,10 @@ async function runTask(
       error,
     });
   } catch (err) {
-    logger.error({ taskId: task.id, err }, 'Failed to write task run log to database');
+    logger.error(
+      { taskId: task.id, err },
+      'Failed to write task run log to database',
+    );
   }
 
   const nextRun = computeNextRun(task);
@@ -389,7 +406,10 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         // Re-check task status in case it was paused/cancelled
         const currentTask = getTaskById(task.id);
         if (!currentTask) {
-          logger.warn({ taskId: task.id }, 'Due task disappeared from database, skipping');
+          logger.warn(
+            { taskId: task.id },
+            'Due task disappeared from database, skipping',
+          );
           continue;
         }
         if (currentTask.status !== 'active') {
@@ -401,7 +421,11 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         }
 
         logger.info(
-          { taskId: currentTask.id, chatJid: currentTask.chat_jid, scheduleType: currentTask.schedule_type },
+          {
+            taskId: currentTask.id,
+            chatJid: currentTask.chat_jid,
+            scheduleType: currentTask.schedule_type,
+          },
           'Enqueuing due task',
         );
         deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>

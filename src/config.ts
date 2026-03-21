@@ -61,10 +61,7 @@ export const X_HEALTH_CHECK_INTERVAL = parseInt(
   process.env.X_HEALTH_CHECK_INTERVAL || String(6 * 60 * 60 * 1000),
   10,
 );
-export const IDLE_TIMEOUT = parseInt(
-  process.env.IDLE_TIMEOUT || '120000',
-  10,
-); // 2min default — how long to keep container alive after last result
+export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '120000', 10); // 2min default — how long to keep container alive after last result
 export const FIRST_OUTPUT_TIMEOUT = parseInt(
   process.env.FIRST_OUTPUT_TIMEOUT || '300000',
   10,
@@ -92,7 +89,11 @@ export const TIMEZONE =
 export const TELEGRAM_BOT_TOKEN =
   process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
 
-export const TELEGRAM_BOT_POOL = (process.env.TELEGRAM_BOT_POOL || envConfig.TELEGRAM_BOT_POOL || '')
+export const TELEGRAM_BOT_POOL = (
+  process.env.TELEGRAM_BOT_POOL ||
+  envConfig.TELEGRAM_BOT_POOL ||
+  ''
+)
   .split(',')
   .map((t) => t.trim())
   .filter(Boolean);

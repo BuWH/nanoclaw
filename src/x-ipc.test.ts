@@ -34,9 +34,21 @@ vi.mock('child_process', async (importOriginal) => {
         const { EventEmitter } = require('events');
         const { Readable, Writable } = require('stream');
         const proc = new EventEmitter();
-        proc.stdout = new Readable({ read() { this.push(null); } });
-        proc.stderr = new Readable({ read() { this.push(null); } });
-        proc.stdin = new Writable({ write(_c: unknown, _e: unknown, cb: () => void) { cb(); } });
+        proc.stdout = new Readable({
+          read() {
+            this.push(null);
+          },
+        });
+        proc.stderr = new Readable({
+          read() {
+            this.push(null);
+          },
+        });
+        proc.stdin = new Writable({
+          write(_c: unknown, _e: unknown, cb: () => void) {
+            cb();
+          },
+        });
         proc.pid = 99999;
         proc.unref = () => {};
         process.nextTick(() => proc.emit('close', 1));
@@ -110,7 +122,9 @@ describe('runScript', () => {
     // 2. Spawns a child that sleeps 60s
     // 3. Parent also sleeps 60s
     // Both should be killed when process group is killed.
-    writeFileSync(helperScript, `
+    writeFileSync(
+      helperScript,
+      `
 import { spawn } from 'child_process';
 
 // Read stdin
@@ -123,14 +137,23 @@ child.unref();
 
 // Parent also sleeps
 setTimeout(() => {}, 60000);
-`);
+`,
+    );
 
     // We need to make runScript use our helper script.
     // Since runScript hardcodes the path, we'll place our script where it expects it.
-    const skillsScriptsDir = path.join(PROJECT_ROOT, '.claude', 'skills', 'x-integration', 'scripts');
+    const skillsScriptsDir = path.join(
+      PROJECT_ROOT,
+      '.claude',
+      'skills',
+      'x-integration',
+      'scripts',
+    );
     const targetPath = path.join(skillsScriptsDir, '__test-orphan-kill.ts');
 
-    writeFileSync(targetPath, `
+    writeFileSync(
+      targetPath,
+      `
 import { spawn } from 'child_process';
 
 // Read stdin
@@ -145,7 +168,8 @@ process.stderr.write('CHILD_PID:' + child.pid + '\\n');
 
 // Parent also sleeps
 setTimeout(() => {}, 60000);
-`);
+`,
+    );
 
     try {
       // Use a 2-second timeout
@@ -175,25 +199,42 @@ setTimeout(() => {}, 60000);
         expect(childAlive).toBe(false);
       }
     } finally {
-      try { unlinkSync(targetPath); } catch { /* ignore */ }
-      try { unlinkSync(helperScript); } catch { /* ignore */ }
+      try {
+        unlinkSync(targetPath);
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlinkSync(helperScript);
+      } catch {
+        /* ignore */
+      }
     }
   });
 
   it('returns parsed JSON from successful script stdout', async () => {
     const { writeFileSync, unlinkSync } = await import('fs');
 
-    const skillsScriptsDir = path.join(PROJECT_ROOT, '.claude', 'skills', 'x-integration', 'scripts');
+    const skillsScriptsDir = path.join(
+      PROJECT_ROOT,
+      '.claude',
+      'skills',
+      'x-integration',
+      'scripts',
+    );
     const targetPath = path.join(skillsScriptsDir, '__test-success.ts');
 
-    writeFileSync(targetPath, `
+    writeFileSync(
+      targetPath,
+      `
 // Read stdin then output JSON result
 process.stdin.resume();
 process.stdin.on('data', () => {
   console.log(JSON.stringify({ success: true, message: 'ok', data: { foo: 42 } }));
   process.exit(0);
 });
-`);
+`,
+    );
 
     try {
       const result = await runScript('__test-success', { input: 'test' }, 5000);
@@ -202,23 +243,36 @@ process.stdin.on('data', () => {
       expect(result.message).toBe('ok');
       expect(result.data).toEqual({ foo: 42 });
     } finally {
-      try { unlinkSync(targetPath); } catch { /* ignore */ }
+      try {
+        unlinkSync(targetPath);
+      } catch {
+        /* ignore */
+      }
     }
   });
 
   it('returns failure when script exits with non-zero code', async () => {
     const { writeFileSync, unlinkSync } = await import('fs');
 
-    const skillsScriptsDir = path.join(PROJECT_ROOT, '.claude', 'skills', 'x-integration', 'scripts');
+    const skillsScriptsDir = path.join(
+      PROJECT_ROOT,
+      '.claude',
+      'skills',
+      'x-integration',
+      'scripts',
+    );
     const targetPath = path.join(skillsScriptsDir, '__test-fail.ts');
 
-    writeFileSync(targetPath, `
+    writeFileSync(
+      targetPath,
+      `
 process.stdin.resume();
 process.stdin.on('data', () => {
   process.stderr.write('something went wrong');
   process.exit(1);
 });
-`);
+`,
+    );
 
     try {
       const result = await runScript('__test-fail', {}, 5000);
@@ -228,23 +282,36 @@ process.stdin.on('data', () => {
       expect(result.message).toContain('exit 1');
       expect(result.message).toContain('something went wrong');
     } finally {
-      try { unlinkSync(targetPath); } catch { /* ignore */ }
+      try {
+        unlinkSync(targetPath);
+      } catch {
+        /* ignore */
+      }
     }
   });
 
   it('parses JSON result from stdout even when script exits non-zero', async () => {
     const { writeFileSync, unlinkSync } = await import('fs');
 
-    const skillsScriptsDir = path.join(PROJECT_ROOT, '.claude', 'skills', 'x-integration', 'scripts');
+    const skillsScriptsDir = path.join(
+      PROJECT_ROOT,
+      '.claude',
+      'skills',
+      'x-integration',
+      'scripts',
+    );
     const targetPath = path.join(skillsScriptsDir, '__test-exit1-json.ts');
 
-    writeFileSync(targetPath, `
+    writeFileSync(
+      targetPath,
+      `
 process.stdin.resume();
 process.stdin.on('data', () => {
   console.log(JSON.stringify({ success: false, message: 'X API error: 403 Forbidden' }));
   process.exitCode = 1;
 });
-`);
+`,
+    );
 
     try {
       const result = await runScript('__test-exit1-json', {}, 5000);
@@ -252,23 +319,36 @@ process.stdin.on('data', () => {
       expect(result.success).toBe(false);
       expect(result.message).toBe('X API error: 403 Forbidden');
     } finally {
-      try { unlinkSync(targetPath); } catch { /* ignore */ }
+      try {
+        unlinkSync(targetPath);
+      } catch {
+        /* ignore */
+      }
     }
   });
 
   it('returns failure when stdout is not valid JSON', async () => {
     const { writeFileSync, unlinkSync } = await import('fs');
 
-    const skillsScriptsDir = path.join(PROJECT_ROOT, '.claude', 'skills', 'x-integration', 'scripts');
+    const skillsScriptsDir = path.join(
+      PROJECT_ROOT,
+      '.claude',
+      'skills',
+      'x-integration',
+      'scripts',
+    );
     const targetPath = path.join(skillsScriptsDir, '__test-badjson.ts');
 
-    writeFileSync(targetPath, `
+    writeFileSync(
+      targetPath,
+      `
 process.stdin.resume();
 process.stdin.on('data', () => {
   console.log('not json');
   process.exit(0);
 });
-`);
+`,
+    );
 
     try {
       const result = await runScript('__test-badjson', {}, 5000);
@@ -276,7 +356,11 @@ process.stdin.on('data', () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain('No output');
     } finally {
-      try { unlinkSync(targetPath); } catch { /* ignore */ }
+      try {
+        unlinkSync(targetPath);
+      } catch {
+        /* ignore */
+      }
     }
   });
 });
@@ -325,7 +409,9 @@ describe('handleXIpc', () => {
 
   it('validates required fields for x_post', async () => {
     const { mkdirSync, readFileSync } = await import('fs');
-    mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), { recursive: true });
+    mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), {
+      recursive: true,
+    });
 
     const handled = await handleXIpc(
       { type: 'x_post', requestId: 'r-missing-content' },
@@ -336,7 +422,16 @@ describe('handleXIpc', () => {
 
     expect(handled).toBe(true);
     const result = JSON.parse(
-      readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-missing-content.json'), 'utf-8'),
+      readFileSync(
+        path.join(
+          dataDir,
+          'ipc',
+          'main',
+          'x_results',
+          'r-missing-content.json',
+        ),
+        'utf-8',
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.message).toBe('Missing content');
@@ -344,7 +439,9 @@ describe('handleXIpc', () => {
 
   it('validates required fields for x_like', async () => {
     const { mkdirSync, readFileSync } = await import('fs');
-    mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), { recursive: true });
+    mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), {
+      recursive: true,
+    });
 
     const handled = await handleXIpc(
       { type: 'x_like', requestId: 'r-missing-url' },
@@ -355,7 +452,10 @@ describe('handleXIpc', () => {
 
     expect(handled).toBe(true);
     const result = JSON.parse(
-      readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-missing-url.json'), 'utf-8'),
+      readFileSync(
+        path.join(dataDir, 'ipc', 'main', 'x_results', 'r-missing-url.json'),
+        'utf-8',
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.message).toBe('Missing tweetUrl');
@@ -363,7 +463,9 @@ describe('handleXIpc', () => {
 
   it('validates required fields for x_reply', async () => {
     const { mkdirSync, readFileSync } = await import('fs');
-    mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), { recursive: true });
+    mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), {
+      recursive: true,
+    });
 
     const handled = await handleXIpc(
       { type: 'x_reply', requestId: 'r-missing-reply' },
@@ -374,7 +476,10 @@ describe('handleXIpc', () => {
 
     expect(handled).toBe(true);
     const result = JSON.parse(
-      readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-missing-reply.json'), 'utf-8'),
+      readFileSync(
+        path.join(dataDir, 'ipc', 'main', 'x_results', 'r-missing-reply.json'),
+        'utf-8',
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.message).toBe('Missing tweetUrl or content');
@@ -382,7 +487,11 @@ describe('handleXIpc', () => {
 
   afterEach(async () => {
     const { rmSync } = await import('fs');
-    try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try {
+      rmSync(dataDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   });
 });
 
@@ -392,7 +501,9 @@ describe('handleXIpc', () => {
 describe('x-tweet-cache', () => {
   const CACHE_FILE = path.join(PROJECT_ROOT, 'data', 'x-tweet-cache.json');
 
-  function makeCacheEntry(overrides: Partial<TweetCacheEntry> = {}): TweetCacheEntry {
+  function makeCacheEntry(
+    overrides: Partial<TweetCacheEntry> = {},
+  ): TweetCacheEntry {
     return {
       id: '123456789',
       author: 'Test User',
@@ -411,20 +522,32 @@ describe('x-tweet-cache', () => {
 
   beforeEach(() => {
     // Ensure clean cache state
-    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(CACHE_FILE);
+    } catch {
+      /* ignore */
+    }
   });
 
   afterEach(() => {
-    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(CACHE_FILE);
+    } catch {
+      /* ignore */
+    }
   });
 
   describe('extractTweetId', () => {
     it('extracts ID from x.com URL', () => {
-      expect(extractTweetId('https://x.com/user/status/123456789')).toBe('123456789');
+      expect(extractTweetId('https://x.com/user/status/123456789')).toBe(
+        '123456789',
+      );
     });
 
     it('extracts ID from twitter.com URL', () => {
-      expect(extractTweetId('https://twitter.com/user/status/987654321')).toBe('987654321');
+      expect(extractTweetId('https://twitter.com/user/status/987654321')).toBe(
+        '987654321',
+      );
     });
 
     it('accepts raw numeric ID', () => {
@@ -523,7 +646,10 @@ describe('x-tweet-cache', () => {
         version: 1 as const,
         tweets: {
           fresh: makeCacheEntry({ id: 'fresh', cachedAt: Date.now() }),
-          stale: makeCacheEntry({ id: 'stale', cachedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 }),
+          stale: makeCacheEntry({
+            id: 'stale',
+            cachedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
+          }),
         },
       };
       const pruned = pruneCache(cache);
@@ -593,7 +719,10 @@ describe('x-tweet-cache', () => {
 
       const cached2 = getCachedTweet('s2');
       expect(cached2).toBeTruthy();
-      expect(cached2!.quotedTweet).toEqual({ author: 'Carol', content: 'Original tweet' });
+      expect(cached2!.quotedTweet).toEqual({
+        author: 'Carol',
+        content: 'Original tweet',
+      });
     });
   });
 
@@ -628,7 +757,13 @@ describe('x-tweet-cache', () => {
         handle: '@nobody',
         content: 'test',
         timestamp: '',
-        metrics: { replies: '0', reposts: '0', likes: '0', views: '0', bookmarks: '0' },
+        metrics: {
+          replies: '0',
+          reposts: '0',
+          likes: '0',
+          views: '0',
+          bookmarks: '0',
+        },
         replies: [],
       });
       const cache = loadCache();
@@ -651,7 +786,9 @@ describe('x-tweet-cache', () => {
       const output = formatCachedTweet(entry);
       expect(output).toContain('Test User (@testuser)');
       expect(output).toContain('Hello world');
-      expect(output).toContain('Replies: 5 | Reposts: 10 | Likes: 42 | Views: 1000');
+      expect(output).toContain(
+        'Replies: 5 | Reposts: 10 | Likes: 42 | Views: 1000',
+      );
       expect(output).toContain('[Served from cache]');
     });
 
@@ -674,17 +811,31 @@ describe('handleXIpc tweet cache', () => {
   const CACHE_FILE = path.join(PROJECT_ROOT, 'data', 'x-tweet-cache.json');
 
   beforeEach(() => {
-    fs.mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), { recursive: true });
+    fs.mkdirSync(path.join(dataDir, 'ipc', 'main', 'x_results'), {
+      recursive: true,
+    });
     // Ensure clean cache
-    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(CACHE_FILE);
+    } catch {
+      /* ignore */
+    }
     // Enable fake spawn so cache-miss tests don't run real scrape-tweet.ts
     mockSpawnControl.enabled = true;
   });
 
   afterEach(() => {
     mockSpawnControl.enabled = false;
-    try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
-    try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
+    try {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+    try {
+      fs.unlinkSync(CACHE_FILE);
+    } catch {
+      /* ignore */
+    }
   });
 
   it('serves x_scrape_tweet from cache when tweet is cached (no subprocess)', async () => {
@@ -718,7 +869,10 @@ describe('handleXIpc tweet cache', () => {
     expect(handled).toBe(true);
 
     const result = JSON.parse(
-      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-cache-hit.json'), 'utf-8'),
+      fs.readFileSync(
+        path.join(dataDir, 'ipc', 'main', 'x_results', 'r-cache-hit.json'),
+        'utf-8',
+      ),
     );
     expect(result.success).toBe(true);
     expect(result.message).toContain('Cached Author');
@@ -759,7 +913,10 @@ describe('handleXIpc tweet cache', () => {
     expect(handled).toBe(true);
 
     const result = JSON.parse(
-      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-replies-bypass.json'), 'utf-8'),
+      fs.readFileSync(
+        path.join(dataDir, 'ipc', 'main', 'x_results', 'r-replies-bypass.json'),
+        'utf-8',
+      ),
     );
     // Should NOT have served from cache (runScript was called instead)
     expect(result.message).not.toContain('[Served from cache]');
@@ -796,7 +953,10 @@ describe('handleXIpc tweet cache', () => {
     expect(handled).toBe(true);
 
     const result = JSON.parse(
-      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-ttl-expired.json'), 'utf-8'),
+      fs.readFileSync(
+        path.join(dataDir, 'ipc', 'main', 'x_results', 'r-ttl-expired.json'),
+        'utf-8',
+      ),
     );
     // Should NOT have served from cache (runScript was called instead)
     expect(result.message).not.toContain('[Served from cache]');
@@ -818,7 +978,10 @@ describe('handleXIpc tweet cache', () => {
     expect(handled).toBe(true);
 
     const result = JSON.parse(
-      fs.readFileSync(path.join(dataDir, 'ipc', 'main', 'x_results', 'r-cache-miss.json'), 'utf-8'),
+      fs.readFileSync(
+        path.join(dataDir, 'ipc', 'main', 'x_results', 'r-cache-miss.json'),
+        'utf-8',
+      ),
     );
     // Mocked runScript returns failure, proving no cache was served
     expect(result.success).toBe(false);

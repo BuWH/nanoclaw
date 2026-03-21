@@ -19,12 +19,23 @@ const SEND_TIMEOUT_MS = 30_000;
 function withSendTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`Telegram ${label} timed out after ${SEND_TIMEOUT_MS / 1000}s`)),
+      () =>
+        reject(
+          new Error(
+            `Telegram ${label} timed out after ${SEND_TIMEOUT_MS / 1000}s`,
+          ),
+        ),
       SEND_TIMEOUT_MS,
     );
     promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
     );
   });
 }
@@ -60,10 +71,7 @@ export function toTelegramHtml(text: string): string {
   });
 
   // Step 4: Convert double-asterisk bold (**...**) first
-  html = html.replace(
-    /\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*/g,
-    '<b>$1</b>',
-  );
+  html = html.replace(/\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*/g, '<b>$1</b>');
 
   // Step 5: Convert single-asterisk bold (*...*) — but not inside <pre>/<code> tags
   html = html.replace(
@@ -146,7 +154,10 @@ export class TelegramChannel implements Channel {
         return;
       }
       await ctx.reply('正在重启服务器...');
-      logger.info({ chatId: ctx.chat.id, user: ctx.from?.first_name }, 'Restart triggered via /restart command');
+      logger.info(
+        { chatId: ctx.chat.id, user: ctx.from?.first_name },
+        'Restart triggered via /restart command',
+      );
       // Small delay so the reply is sent before shutting down
       setTimeout(() => this.opts.onRestart!(), 500);
     });
@@ -241,32 +252,38 @@ export class TelegramChannel implements Channel {
       });
 
       const header = `<b>执行状态</b>\n\n`;
-      ctx.reply(header + lines.join('\n\n'), { parse_mode: 'HTML' }).catch(() => {
-        const plain = entries
-          .map((e) => {
-            const group = groups[e.groupJid];
-            const name = group?.name || e.groupJid;
-            const status: string[] = [];
-            if (e.activeMessage) status.push(e.idleWaiting ? '消息(空闲)' : '消息(运行)');
-            if (e.activeTask) status.push('任务(运行)');
-            if (e.pendingTaskCount > 0) status.push(`${e.pendingTaskCount}排队`);
-            return `${name}: ${status.join(', ')}`;
-          })
-          .join('\n');
-        ctx.reply(`执行状态\n\n${plain}`);
-      });
+      ctx
+        .reply(header + lines.join('\n\n'), { parse_mode: 'HTML' })
+        .catch(() => {
+          const plain = entries
+            .map((e) => {
+              const group = groups[e.groupJid];
+              const name = group?.name || e.groupJid;
+              const status: string[] = [];
+              if (e.activeMessage)
+                status.push(e.idleWaiting ? '消息(空闲)' : '消息(运行)');
+              if (e.activeTask) status.push('任务(运行)');
+              if (e.pendingTaskCount > 0)
+                status.push(`${e.pendingTaskCount}排队`);
+              return `${name}: ${status.join(', ')}`;
+            })
+            .join('\n');
+          ctx.reply(`执行状态\n\n${plain}`);
+        });
     });
 
     // Set bot menu commands so they appear in Telegram's UI
-    this.bot.api.setMyCommands([
-      { command: 'tasks', description: '查看定时任务列表' },
-      { command: 'status', description: '查看后台任务执行状态' },
-      { command: 'ping', description: '检查机器人是否在线' },
-      { command: 'restart', description: '重启服务器' },
-      { command: 'chatid', description: '获取当前聊天的注册 ID' },
-    ]).catch((err) => {
-      logger.warn({ err }, 'Failed to set bot commands menu');
-    });
+    this.bot.api
+      .setMyCommands([
+        { command: 'tasks', description: '查看定时任务列表' },
+        { command: 'status', description: '查看后台任务执行状态' },
+        { command: 'ping', description: '检查机器人是否在线' },
+        { command: 'restart', description: '重启服务器' },
+        { command: 'chatid', description: '获取当前聊天的注册 ID' },
+      ])
+      .catch((err) => {
+        logger.warn({ err }, 'Failed to set bot commands menu');
+      });
 
     this.bot.on('message:text', async (ctx) => {
       this.lastUpdateTime = Date.now();
@@ -336,7 +353,12 @@ export class TelegramChannel implements Channel {
       });
 
       logger.info(
-        { chatJid, chatName, sender: senderName, preview: content.slice(0, 200) },
+        {
+          chatJid,
+          chatName,
+          sender: senderName,
+          preview: content.slice(0, 200),
+        },
         'Telegram message received',
       );
     });
@@ -390,7 +412,8 @@ export class TelegramChannel implements Channel {
         const photos = ctx.message.photo;
         const largest = photos[photos.length - 1];
         const file = await ctx.api.getFile(largest.file_id);
-        const url = `https://api.telegram.org/file/bot${this.botToken}/` + file.file_path;
+        const url =
+          `https://api.telegram.org/file/bot${this.botToken}/` + file.file_path;
 
         const response = await fetch(url);
         if (response.ok) {
@@ -401,7 +424,10 @@ export class TelegramChannel implements Channel {
           const buffer = Buffer.from(await response.arrayBuffer());
           fs.writeFileSync(filePath, buffer);
           imagePath = filename;
-          logger.info({ chatJid, msgId, size: buffer.length }, 'Photo downloaded');
+          logger.info(
+            { chatJid, msgId, size: buffer.length },
+            'Photo downloaded',
+          );
         }
       } catch (err) {
         logger.warn({ chatJid, msgId, err }, 'Failed to download photo');
@@ -420,14 +446,17 @@ export class TelegramChannel implements Channel {
       });
 
       logger.info(
-        { chatJid, sender: senderName, hasImage: !!imagePath, preview: (caption || '[Photo]').slice(0, 200) },
+        {
+          chatJid,
+          sender: senderName,
+          hasImage: !!imagePath,
+          preview: (caption || '[Photo]').slice(0, 200),
+        },
         'Telegram photo received',
       );
     });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) =>
-      storeNonText(ctx, '[Voice message]'),
-    );
+    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
@@ -462,7 +491,9 @@ export class TelegramChannel implements Channel {
           // Start watchdog to detect silent polling death
           this.pollingWatchdog = setInterval(() => {
             if (this.bot && !this.bot.isRunning() && !this.stopping) {
-              logger.fatal('Telegram polling stopped unexpectedly, exiting for restart');
+              logger.fatal(
+                'Telegram polling stopped unexpectedly, exiting for restart',
+              );
               process.exit(1);
             }
 
@@ -477,12 +508,16 @@ export class TelegramChannel implements Channel {
             // loop via launchd/systemd KeepAlive.
             if (!this.stopping) {
               const silenceMs = Date.now() - this.lastUpdateTime;
-              const hasGroups = Object.keys(this.opts.registeredGroups()).length > 0;
+              const hasGroups =
+                Object.keys(this.opts.registeredGroups()).length > 0;
               const pollingAlive = this.bot?.isRunning() ?? false;
 
               if (hasGroups && silenceMs > 10 * 60 * 1000 && !pollingAlive) {
                 logger.fatal(
-                  { silenceMs, lastUpdateTime: new Date(this.lastUpdateTime).toISOString() },
+                  {
+                    silenceMs,
+                    lastUpdateTime: new Date(this.lastUpdateTime).toISOString(),
+                  },
                   'No Telegram updates for 10+ minutes and polling stopped, exiting for restart',
                 );
                 process.exit(1);
@@ -490,7 +525,11 @@ export class TelegramChannel implements Channel {
                 // Polling is alive but 30+ minutes of silence is unusual —
                 // log a warning but do NOT exit.
                 logger.warn(
-                  { silenceMs, lastUpdateTime: new Date(this.lastUpdateTime).toISOString(), pollingAlive },
+                  {
+                    silenceMs,
+                    lastUpdateTime: new Date(this.lastUpdateTime).toISOString(),
+                    pollingAlive,
+                  },
                   'No Telegram updates for 30+ minutes — polling appears alive, monitoring',
                 );
               }
@@ -509,7 +548,11 @@ export class TelegramChannel implements Channel {
     });
   }
 
-  async sendMessage(jid: string, text: string, replyToMessageId?: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    replyToMessageId?: string,
+  ): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
       return;
@@ -539,19 +582,37 @@ export class TelegramChannel implements Channel {
           opts.reply_parameters = { message_id: Number(replyToMessageId) };
         }
         try {
-          await withSendTimeout(this.bot.api.sendMessage(numericId, chunks[ci], opts), 'sendMessage');
+          await withSendTimeout(
+            this.bot.api.sendMessage(numericId, chunks[ci], opts),
+            'sendMessage',
+          );
         } catch {
           // Fallback: send as plain text if HTML parsing fails
-          logger.debug({ jid }, 'HTML parse failed, falling back to plain text');
+          logger.debug(
+            { jid },
+            'HTML parse failed, falling back to plain text',
+          );
           const fallbackOpts: Record<string, unknown> = {};
           if (ci === 0 && replyToMessageId) {
-            fallbackOpts.reply_parameters = { message_id: Number(replyToMessageId) };
+            fallbackOpts.reply_parameters = {
+              message_id: Number(replyToMessageId),
+            };
           }
-          await withSendTimeout(this.bot.api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts), 'sendMessage');
+          await withSendTimeout(
+            this.bot.api.sendMessage(
+              numericId,
+              text.slice(0, MAX_LENGTH),
+              fallbackOpts,
+            ),
+            'sendMessage',
+          );
           break;
         }
       }
-      logger.info({ jid, length: text.length, preview: text.slice(0, 200) }, 'Telegram message sent');
+      logger.info(
+        { jid, length: text.length, preview: text.slice(0, 200) },
+        'Telegram message sent',
+      );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
     }
@@ -700,7 +761,10 @@ export async function sendPoolMessage(
 ): Promise<boolean> {
   if (poolApis.length === 0) {
     // No pool bots available — caller should fall back to main bot
-    logger.warn({ sender, chatId }, 'No pool bots available, skipping pool message');
+    logger.warn(
+      { sender, chatId },
+      'No pool bots available, skipping pool message',
+    );
     return false;
   }
 
@@ -714,9 +778,15 @@ export async function sendPoolMessage(
     try {
       await poolApis[idx].setMyName(sender);
       await new Promise((r) => setTimeout(r, 2000));
-      logger.info({ sender, groupFolder, poolIndex: idx }, 'Assigned and renamed pool bot');
+      logger.info(
+        { sender, groupFolder, poolIndex: idx },
+        'Assigned and renamed pool bot',
+      );
     } catch (err) {
-      logger.warn({ sender, err }, 'Failed to rename pool bot (sending anyway)');
+      logger.warn(
+        { sender, err },
+        'Failed to rename pool bot (sending anyway)',
+      );
     }
   }
 
@@ -742,19 +812,39 @@ export async function sendPoolMessage(
         if (ci === 0 && replyToMessageId) {
           opts.reply_parameters = { message_id: Number(replyToMessageId) };
         }
-        await withSendTimeout(api.sendMessage(numericId, chunks[ci], opts), 'sendMessage(pool)');
+        await withSendTimeout(
+          api.sendMessage(numericId, chunks[ci], opts),
+          'sendMessage(pool)',
+        );
       } catch {
         // Fallback: send as plain text if HTML parsing fails
-        logger.debug({ chatId, sender }, 'HTML parse failed in pool message, falling back to plain text');
+        logger.debug(
+          { chatId, sender },
+          'HTML parse failed in pool message, falling back to plain text',
+        );
         const fallbackOpts: Record<string, unknown> = {};
         if (ci === 0 && replyToMessageId) {
-          fallbackOpts.reply_parameters = { message_id: Number(replyToMessageId) };
+          fallbackOpts.reply_parameters = {
+            message_id: Number(replyToMessageId),
+          };
         }
-        await withSendTimeout(api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts), 'sendMessage(pool)');
+        await withSendTimeout(
+          api.sendMessage(numericId, text.slice(0, MAX_LENGTH), fallbackOpts),
+          'sendMessage(pool)',
+        );
         break;
       }
     }
-    logger.info({ chatId, sender, poolIndex: idx, length: text.length, preview: text.slice(0, 200) }, 'Pool message sent');
+    logger.info(
+      {
+        chatId,
+        sender,
+        poolIndex: idx,
+        length: text.length,
+        preview: text.slice(0, 200),
+      },
+      'Pool message sent',
+    );
     return true;
   } catch (err) {
     logger.error({ chatId, sender, err }, 'Failed to send pool message');

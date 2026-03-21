@@ -97,20 +97,28 @@ function createFakeProcess() {
 let fakeProc: ReturnType<typeof createFakeProcess>;
 
 vi.mock('child_process', async () => {
-  const actual = await vi.importActual<typeof import('child_process')>('child_process');
+  const actual =
+    await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
     spawn: vi.fn(() => fakeProc),
-    exec: vi.fn((_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-      if (cb) cb(null);
-      return new EventEmitter();
-    }),
+    exec: vi.fn(
+      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+        if (cb) cb(null);
+        return new EventEmitter();
+      },
+    ),
   };
 });
 
 // --- Imports (must come after vi.mock calls) ---
 
-import { _initTestDatabase, storeMessage, getMessagesSince, storeChatMetadata } from './db.js';
+import {
+  _initTestDatabase,
+  storeMessage,
+  getMessagesSince,
+  storeChatMetadata,
+} from './db.js';
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import { formatMessages, formatOutbound } from './router.js';
 import type { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -156,7 +164,10 @@ function createChannel(): Channel & {
   };
 }
 
-function emitOutput(proc: ReturnType<typeof createFakeProcess>, output: ContainerOutput) {
+function emitOutput(
+  proc: ReturnType<typeof createFakeProcess>,
+  output: ContainerOutput,
+) {
   const json = JSON.stringify(output);
   proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
 }
@@ -173,7 +184,8 @@ async function runPipeline(
   output: ContainerOutput;
   sentMessages: Array<{ jid: string; text: string; replyToId?: string }>;
 }> {
-  const sentMessages: Array<{ jid: string; text: string; replyToId?: string }> = [];
+  const sentMessages: Array<{ jid: string; text: string; replyToId?: string }> =
+    [];
 
   // 1. Query messages from real DB
   const messages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
@@ -221,7 +233,13 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
     fakeProc = createFakeProcess();
     _initTestDatabase();
     // Ensure the chat JID exists so storeMessage FK constraint is satisfied
-    storeChatMetadata(TEST_CHAT_JID, '2025-01-01T00:00:00.000Z', 'Test Group', 'telegram', true);
+    storeChatMetadata(
+      TEST_CHAT_JID,
+      '2025-01-01T00:00:00.000Z',
+      'Test Group',
+      'telegram',
+      true,
+    );
   });
 
   afterEach(() => {
