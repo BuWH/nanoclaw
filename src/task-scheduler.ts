@@ -249,16 +249,6 @@ async function runTask(
               'Failed to send task result to primary chat (message lost)',
             );
           }
-          // Forward to extra subscribers
-          const extraJids = parseExtraChatJids(task.extra_chat_jids);
-          for (const jid of extraJids) {
-            try {
-              await deps.sendMessage(jid, streamedOutput.result);
-              logger.debug({ taskId: task.id, jid }, 'Task result forwarded to extra subscriber');
-            } catch (err) {
-              logger.error({ taskId: task.id, jid, err }, 'Failed to forward task result to extra chat');
-            }
-          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -431,18 +421,6 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   };
 
   loop();
-}
-
-/** Parse extra_chat_jids JSON string into an array of JID strings. */
-function parseExtraChatJids(raw: string | undefined | null): string[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed.filter((j): j is string => typeof j === 'string');
-  } catch {
-    // ignore malformed JSON
-  }
-  return [];
 }
 
 /** @internal - for tests only. */
