@@ -3,8 +3,10 @@
 
 FROM node:22-slim
 
-# Install system dependencies for Chromium and Python
+# Install system dependencies for Chromium, Python, and native module compilation
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3-dev \
     chromium \
     fonts-liberation \
     fonts-noto-cjk \
