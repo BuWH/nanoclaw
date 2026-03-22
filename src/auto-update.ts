@@ -276,20 +276,44 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         const newHead = git('rev-parse HEAD', projectRoot);
         const range = `${local}..${newHead}`;
 
-        // Try --first-parent --no-merges first (clean linear history).
-        // If that yields nothing (e.g. only merge commits), fall back to
-        // --first-parent alone, then strip "Merge pull request" lines.
+        // Strategy 1: merge commit subjects with "Merge pull request" prefix
+        // stripped — gives the PR title, which is the most user-friendly summary.
+        // Works for the default GitHub "Create a merge commit" flow.
         let subjects = git(
-          `log --format=%s --first-parent --no-merges ${range}`,
+          `log --format=%s --first-parent ${range}`,
           projectRoot,
-        );
+        )
+          .split('\n')
+          .map((s) =>
+            s.replace(/^Merge pull request #\d+ from \S+\s*/i, '').trim(),
+          )
+          .filter(Boolean)
+          .join('\n')
+          .trim();
 
+        // Strategy 2: extract PR description from merge commit body.
+        // Useful when strategy 1 yields nothing (e.g. trivial merge where
+        // the subject is just "Merge pull request #N from ...").
         if (!subjects) {
-          subjects = git(`log --format=%s --first-parent ${range}`, projectRoot)
-            .split('\n')
-            .filter((s) => !/^Merge (pull request|branch) /i.test(s))
-            .join('\n')
-            .trim();
+          const body = git(
+            `log --format=%b --first-parent ${range}`,
+            projectRoot,
+          );
+          if (body) {
+            subjects = body
+              .split('\n')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .filter((s) => !/^Merge (pull request|branch) /i.test(s))
+              .join('\n')
+              .trim();
+          }
+        }
+
+        // Strategy 3: non-merge commits in the range (squash-merge flow,
+        // or when strategies 1-2 produce nothing).
+        if (!subjects) {
+          subjects = git(`log --format=%s --no-merges ${range}`, projectRoot);
         }
 
         logger.info(
