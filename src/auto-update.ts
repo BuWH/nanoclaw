@@ -76,10 +76,7 @@ function ensureOnMain(cwd: string): boolean {
 
   if (branch === 'main') return true;
 
-  logger.warn(
-    { branch },
-    'Main checkout is not on main branch — self-healing',
-  );
+  logger.warn({ branch }, 'Main checkout is not on main branch — self-healing');
 
   // Stash any dirty state so checkout succeeds
   const dirty = git('status --porcelain', cwd);
@@ -267,10 +264,7 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         );
 
         if (!subjects) {
-          subjects = git(
-            `log --format=%s --first-parent ${range}`,
-            projectRoot,
-          )
+          subjects = git(`log --format=%s --first-parent ${range}`, projectRoot)
             .split('\n')
             .filter((s) => !/^Merge (pull request|branch) /i.test(s))
             .join('\n')
