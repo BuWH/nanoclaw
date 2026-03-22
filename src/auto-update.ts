@@ -2,16 +2,18 @@
  * Auto-Update Loop
  *
  * Polls origin/main for new commits. When detected:
- * 1. Quiesce the queue (stop accepting new work, wait for containers to drain)
- * 2. git pull --ff-only
- * 3. npm run build
- * 4. process.exit(0) — launchd KeepAlive restarts the process
+ * 1. Ensure working tree is on main (self-heal if an agent left it on a branch)
+ * 2. Stash any dirty state left behind
+ * 3. Quiesce the queue (stop accepting new work, wait for containers to drain)
+ * 4. git pull --ff-only  (or reset --hard as fallback)
+ * 5. npm run build
+ * 6. process.exit(0) — launchd KeepAlive restarts the process
  *
- * This enables a safe self-modification workflow where the agent creates PRs,
- * the user reviews and merges, and NanoClaw picks up changes automatically.
+ * The main checkout is treated as a read-only production environment.
+ * All development must happen in git worktrees under /tmp/nanoclaw-*.
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -47,6 +49,109 @@ function resolveNodeBinDir(): string {
   return path.dirname(process.execPath);
 }
 
+/** Run a git command and return trimmed stdout. */
+function git(args: string, cwd: string, timeout?: number): string {
+  return execSync(`git ${args}`, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: 'pipe',
+    timeout,
+  }).trim();
+}
+
+/**
+ * Ensure the working tree is on the main branch.
+ *
+ * Agents sometimes leave the main checkout on a feature branch by accident.
+ * Instead of looping forever comparing HEAD to origin/main (which will never
+ * match on a different branch), detect this and self-heal:
+ *   1. Stash any uncommitted changes (so checkout doesn't fail)
+ *   2. git checkout main
+ *
+ * Returns true if we're on main (or recovered successfully), false if
+ * recovery failed and we should skip this cycle.
+ */
+function ensureOnMain(cwd: string): boolean {
+  const branch = git('rev-parse --abbrev-ref HEAD', cwd);
+
+  if (branch === 'main') return true;
+
+  logger.warn(
+    { branch },
+    'Main checkout is not on main branch — self-healing',
+  );
+
+  // Stash any dirty state so checkout succeeds
+  const dirty = git('status --porcelain', cwd);
+  if (dirty) {
+    logger.warn(
+      { fileCount: dirty.split('\n').length },
+      'Stashing dirty working tree before branch recovery',
+    );
+    execSync('git stash', { cwd, stdio: 'pipe' });
+  }
+
+  try {
+    execSync('git checkout main', { cwd, stdio: 'pipe' });
+    logger.info('Recovered: checked out main branch');
+    return true;
+  } catch (err) {
+    logger.error(
+      { err, branch },
+      'Failed to checkout main — skipping auto-update cycle',
+    );
+    return false;
+  }
+}
+
+/**
+ * Stash any uncommitted changes in the working tree.
+ *
+ * Agents may leave behind modified files (e.g. debug edits, partial work).
+ * Rather than failing the pull, we stash them. The main checkout is a
+ * production environment — uncommitted changes here are never intentional.
+ */
+function stashIfDirty(cwd: string): void {
+  const dirty = git('status --porcelain', cwd);
+  if (!dirty) return;
+
+  logger.warn(
+    { fileCount: dirty.split('\n').length },
+    'Stashing dirty working tree before auto-update pull',
+  );
+  execSync('git stash', { cwd, stdio: 'pipe' });
+}
+
+/**
+ * Determine whether origin/main has commits that local main doesn't.
+ *
+ * The old approach (`local !== remote`) broke when local was ahead of remote
+ * (e.g. the checkout was on a feature branch with extra commits). This
+ * caused an infinite restart loop because the SHAs never matched yet
+ * `git pull` had nothing to do.
+ *
+ * The correct check: does origin/main contain commits not reachable from HEAD?
+ * `git merge-base --is-ancestor <remote> <local>` exits 0 when remote is
+ * an ancestor of local (i.e. local already contains everything in remote).
+ */
+function hasRemoteUpdates(
+  cwd: string,
+  localSha: string,
+  remoteSha: string,
+): boolean {
+  if (localSha === remoteSha) return false;
+
+  const result = spawnSync(
+    'git',
+    ['merge-base', '--is-ancestor', remoteSha, localSha],
+    { cwd },
+  );
+
+  // exit 0 = remote is ancestor of local -> no update needed
+  // exit 1 = remote has commits local doesn't -> update needed
+  return result.status !== 0;
+}
+
 export function startAutoUpdateLoop(queue?: QueueHandle): void {
   const projectRoot = process.cwd();
   const nodeBinDir = resolveNodeBinDir();
@@ -64,33 +169,35 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
     if (checking) return;
     checking = true;
     try {
+      // Phase 1: Ensure we're on main. If an agent left us on a feature
+      // branch, recover automatically instead of looping forever.
+      if (!ensureOnMain(projectRoot)) return;
+
+      // Phase 2: Stash any dirty state left by agents.
+      stashIfDirty(projectRoot);
+
+      // Phase 3: Fetch latest remote state.
       execSync('git fetch origin main', {
         cwd: projectRoot,
         stdio: 'ignore',
         timeout: FETCH_TIMEOUT,
       });
 
-      const local = execSync('git rev-parse HEAD', {
-        cwd: projectRoot,
-        encoding: 'utf-8',
-      }).trim();
+      const local = git('rev-parse HEAD', projectRoot);
+      const remote = git('rev-parse origin/main', projectRoot);
 
-      const remote = execSync('git rev-parse origin/main', {
-        cwd: projectRoot,
-        encoding: 'utf-8',
-      }).trim();
-
-      if (local === remote) return;
+      // Phase 4: Check if remote actually has new commits for us.
+      // This replaces the naive `local !== remote` which broke when local
+      // was ahead (feature branch commits) or diverged.
+      if (!hasRemoteUpdates(projectRoot, local, remote)) return;
 
       logger.info(
         { localCommit: local.slice(0, 8), remoteCommit: remote.slice(0, 8) },
         'New commits on main detected, pulling and rebuilding',
       );
 
-      // Quiesce the queue: stop accepting new work and wait for all
-      // running containers to drain before pulling / building / restarting.
-      // This prevents the race where a container starts during the build
-      // window and gets killed by process.exit().
+      // Phase 5: Quiesce the queue — stop accepting new work and wait for
+      // all running containers to drain before pulling / building / restarting.
       if (queue) {
         const active = queue.getActiveCount();
         if (active > 0) {
@@ -120,38 +227,50 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         }
       }
 
-      execSync('git pull --ff-only origin main', {
-        cwd: projectRoot,
-        stdio: 'pipe',
-        timeout: PULL_TIMEOUT,
-        env: execEnv,
-      });
+      // Phase 6: Pull. Try --ff-only first (clean fast-forward). If that
+      // fails (e.g. local diverged from remote due to leftover commits),
+      // fall back to reset --hard. The main checkout is a production
+      // environment — local-only commits here are never intentional.
+      try {
+        execSync('git pull --ff-only origin main', {
+          cwd: projectRoot,
+          stdio: 'pipe',
+          timeout: PULL_TIMEOUT,
+          env: execEnv,
+        });
+      } catch (pullErr) {
+        logger.warn(
+          { err: pullErr },
+          'Fast-forward pull failed — falling back to hard reset',
+        );
+        execSync('git reset --hard origin/main', {
+          cwd: projectRoot,
+          stdio: 'pipe',
+          timeout: PULL_TIMEOUT,
+        });
+      }
 
       // Collect a human-readable summary of what changed.  Strip commit
       // hashes and conventional commit prefixes (fix:, feat:, etc.).
       // Written to disk only after a successful build (see below).
       let changelogText = '';
       try {
-        const newHead = execSync('git rev-parse HEAD', {
-          cwd: projectRoot,
-          encoding: 'utf-8',
-        }).trim();
+        const newHead = git('rev-parse HEAD', projectRoot);
         const range = `${local}..${newHead}`;
 
         // Try --first-parent --no-merges first (clean linear history).
         // If that yields nothing (e.g. only merge commits), fall back to
         // --first-parent alone, then strip "Merge pull request" lines.
-        let subjects = execSync(
-          `git log --format=%s --first-parent --no-merges ${range}`,
-          { cwd: projectRoot, encoding: 'utf-8' },
-        ).trim();
+        let subjects = git(
+          `log --format=%s --first-parent --no-merges ${range}`,
+          projectRoot,
+        );
 
         if (!subjects) {
-          subjects = execSync(`git log --format=%s --first-parent ${range}`, {
-            cwd: projectRoot,
-            encoding: 'utf-8',
-          })
-            .trim()
+          subjects = git(
+            `log --format=%s --first-parent ${range}`,
+            projectRoot,
+          )
             .split('\n')
             .filter((s) => !/^Merge (pull request|branch) /i.test(s))
             .join('\n')
