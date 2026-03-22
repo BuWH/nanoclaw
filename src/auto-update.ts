@@ -34,6 +34,9 @@ export const UPDATE_CHANGELOG_PATH = path.join(
   'last-update-changelog.txt',
 );
 
+/** File that records the last known-good commit SHA for rollback. */
+export const UPDATE_KNOWN_GOOD_PATH = path.join(DATA_DIR, '.known-good-commit');
+
 interface QueueHandle {
   getActiveCount(): number;
   quiesce(): Promise<void>;
@@ -279,6 +282,14 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         // Re-read HEAD after potential branch switch -- it may have changed.
         const localSha = git('rev-parse HEAD', projectRoot);
 
+        // Save known-good commit for rollback
+        try {
+          fs.mkdirSync(path.dirname(UPDATE_KNOWN_GOOD_PATH), { recursive: true });
+          fs.writeFileSync(UPDATE_KNOWN_GOOD_PATH, localSha);
+        } catch (saveErr) {
+          logger.warn({ err: saveErr }, 'Failed to save known-good commit');
+        }
+
         // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
         // fails (e.g. local diverged from remote due to leftover commits),
         // fall back to reset --hard. The main checkout is a production
@@ -373,12 +384,54 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         logger.warn({ err: changelogErr }, 'Failed to build changelog text');
       }
 
-      execSync('npm run build', {
-        cwd: projectRoot,
-        stdio: 'pipe',
-        timeout: BUILD_TIMEOUT,
-        env: execEnv,
-      });
+      try {
+        execSync('npm run build', {
+          cwd: projectRoot,
+          stdio: 'pipe',
+          timeout: BUILD_TIMEOUT,
+          env: execEnv,
+        });
+      } catch (buildErr) {
+        logger.error(
+          { err: buildErr },
+          'Build failed after pull — rolling back to known-good commit',
+        );
+        try {
+          const knownGood = fs
+            .readFileSync(UPDATE_KNOWN_GOOD_PATH, 'utf-8')
+            .trim();
+          if (!/^[0-9a-f]{40}$/i.test(knownGood)) {
+            logger.error(
+              { knownGood },
+              'Invalid known-good SHA, skipping rollback',
+            );
+            process.exit(1);
+          }
+          execSync(`git reset --hard ${knownGood}`, {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: PULL_TIMEOUT,
+          });
+          execSync('npm run build', {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: BUILD_TIMEOUT,
+            env: execEnv,
+          });
+          logger.info(
+            { rolledBackTo: knownGood },
+            'Rollback successful, continuing without restart',
+          );
+          if (queue) queue.unquiesce();
+          return; // Don't exit — we're back on known-good code
+        } catch (rollbackErr) {
+          logger.fatal(
+            { err: rollbackErr },
+            'Rollback also failed — exiting for manual intervention',
+          );
+          process.exit(1);
+        }
+      }
 
       // Persist changelog only after a successful build so a failed
       // update doesn't leave a stale file that misleads the next restart.
