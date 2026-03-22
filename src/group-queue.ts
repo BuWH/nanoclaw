@@ -790,6 +790,11 @@ export class GroupQueue {
     };
   }
 
+  /** Number of container slots currently in use. */
+  getActiveCount(): number {
+    return this.activeCount;
+  }
+
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 

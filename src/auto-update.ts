@@ -31,7 +31,7 @@ function resolveNodeBinDir(): string {
   return path.dirname(process.execPath);
 }
 
-export function startAutoUpdateLoop(): void {
+export function startAutoUpdateLoop(getActiveCount?: () => number): void {
   const projectRoot = process.cwd();
   const nodeBinDir = resolveNodeBinDir();
 
@@ -66,6 +66,20 @@ export function startAutoUpdateLoop(): void {
         { localCommit: local.slice(0, 8), remoteCommit: remote.slice(0, 8) },
         'New commits on main detected, pulling and rebuilding',
       );
+
+      // Defer restart while containers are actively running to avoid
+      // killing in-progress work.  The update will be picked up on the
+      // next check cycle once all containers have finished.
+      if (getActiveCount) {
+        const active = getActiveCount();
+        if (active > 0) {
+          logger.info(
+            { activeContainers: active },
+            'Deferring auto-update: containers still running',
+          );
+          return;
+        }
+      }
 
       execSync('git pull --ff-only origin main', {
         cwd: projectRoot,
