@@ -282,7 +282,7 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         // Re-read HEAD after potential branch switch -- it may have changed.
         const localSha = git('rev-parse HEAD', projectRoot);
 
-        // Save known-good commit for rollback
+        // Save known-good commit for rollback (use post-checkout SHA on main)
         try {
           fs.mkdirSync(path.dirname(UPDATE_KNOWN_GOOD_PATH), {
             recursive: true,
@@ -291,6 +291,11 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         } catch (saveErr) {
           logger.warn({ err: saveErr }, 'Failed to save known-good commit');
         }
+
+        // Capture SHA on main BEFORE pull — this is the changelog base.
+        // `localSha` is read after ensureOnMain, so it's the correct
+        // pre-pull state on the main branch (not a feature branch SHA).
+        const prePullSha = localSha;
 
         // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
         // fails (e.g. local diverged from remote due to leftover commits),
@@ -315,25 +320,37 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
           });
         }
 
-        return { ok: true as const, localSha };
+        return { ok: true as const, localSha, prePullSha };
       });
 
       if (!pullResult.ok) return;
 
-      // For changelog: use `currentHead` captured in Phase 2 (before quiesce,
-      // before ensureOnMain). The `localSha` from the lock closure is read
-      // AFTER ensureOnMain, which may have already moved HEAD to origin/main
-      // via `git checkout main`, making `localSha == newHead` and producing
-      // an empty changelog range.
-      const changelogBase = currentHead;
+      // Check if pull actually changed HEAD. If not (pure branch recovery,
+      // main was already up-to-date), skip rebuild and restart.
+      const newHead = git('rev-parse HEAD', projectRoot);
+      if (pullResult.prePullSha === newHead) {
+        logger.info(
+          { prePullSha: pullResult.prePullSha },
+          'Branch recovered to main but no new commits — skipping rebuild',
+        );
+        if (queue) queue.unquiesce();
+        return;
+      }
+
+      // Use prePullSha (on main, before pull) as changelog base.
+      const changelogBase = pullResult.prePullSha;
 
       // Collect a human-readable summary of what changed.  Strip commit
       // hashes and conventional commit prefixes (fix:, feat:, etc.).
       // Written to disk only after a successful build (see below).
       let changelogText = '';
       try {
-        const newHead = git('rev-parse HEAD', projectRoot);
         const range = `${changelogBase}..${newHead}`;
+
+        logger.info(
+          { changelogBase, newHead, range },
+          'Computing changelog for range',
+        );
 
         // Strategy 1: merge commit subjects with "Merge pull request" prefix
         // stripped — gives the PR title, which is the most user-friendly summary.
@@ -376,7 +393,11 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         }
 
         logger.info(
-          { range, subjectCount: subjects ? subjects.split('\n').length : 0 },
+          {
+            range,
+            subjectCount: subjects ? subjects.split('\n').length : 0,
+            strategy1Raw: subjects || '(empty)',
+          },
           'Changelog subjects collected',
         );
 
@@ -450,7 +471,11 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
           });
           fs.writeFileSync(UPDATE_CHANGELOG_PATH, changelogText, 'utf-8');
           logger.info(
-            { path: UPDATE_CHANGELOG_PATH, length: changelogText.length },
+            {
+              path: UPDATE_CHANGELOG_PATH,
+              length: changelogText.length,
+              preview: changelogText.slice(0, 200),
+            },
             'Changelog written to disk',
           );
         } catch (writeErr) {

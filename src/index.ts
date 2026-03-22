@@ -1118,6 +1118,7 @@ async function main(): Promise<void> {
             {
               changelogPath: UPDATE_CHANGELOG_PATH,
               changelogLength: changelog.length,
+              preview: changelog.slice(0, 200),
             },
             'Read update changelog from disk',
           );
