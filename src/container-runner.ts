@@ -11,6 +11,8 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
+  CONTAINER_MEMORY_LIMIT,
+  CONTAINER_CPU_LIMIT,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   FIRST_OUTPUT_TIMEOUT,
@@ -291,6 +293,10 @@ function buildContainerArgs(
   containerName: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+
+  // Container resource limits
+  args.push('--memory', CONTAINER_MEMORY_LIMIT);
+  args.push('--cpus', CONTAINER_CPU_LIMIT);
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);

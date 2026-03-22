@@ -687,6 +687,16 @@ function startHealthMonitor(): void {
       },
       'Heartbeat',
     );
+
+    // Reset boot attempts counter after stable operation
+    try {
+      const attemptsPath = path.join(DATA_DIR, '.boot-attempts');
+      if (fs.existsSync(attemptsPath)) {
+        fs.writeFileSync(attemptsPath, '0');
+      }
+    } catch {
+      /* non-critical */
+    }
   }, HEARTBEAT_INTERVAL);
 
   // 3. Periodic orphan container cleanup (every 10 minutes)
@@ -718,9 +728,70 @@ function startHealthMonitor(): void {
       process.exit(1);
     }
   }, 30_000);
+
+  // Periodic orphan container cleanup (every 10 minutes)
+  setInterval(
+    () => {
+      try {
+        cleanupOrphans();
+      } catch (err) {
+        logger.warn({ err }, 'Periodic orphan cleanup failed');
+      }
+    },
+    10 * 60 * 1000,
+  );
 }
 
 async function main(): Promise<void> {
+  // Boot failure guard: auto-rollback after 3 consecutive failures
+  const BOOT_ATTEMPTS_PATH = path.join(DATA_DIR, '.boot-attempts');
+  const KNOWN_GOOD_PATH = path.join(DATA_DIR, '.known-good-commit');
+  let bootAttempts = 0;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (fs.existsSync(BOOT_ATTEMPTS_PATH)) {
+      bootAttempts =
+        parseInt(fs.readFileSync(BOOT_ATTEMPTS_PATH, 'utf-8').trim(), 10) || 0;
+    }
+    bootAttempts++;
+    fs.writeFileSync(BOOT_ATTEMPTS_PATH, String(bootAttempts));
+  } catch {
+    /* ignore fs errors during boot guard */
+  }
+
+  if (bootAttempts >= 3) {
+    logger.error(
+      { bootAttempts },
+      'Too many consecutive boot failures — attempting rollback',
+    );
+    try {
+      if (fs.existsSync(KNOWN_GOOD_PATH)) {
+        const knownGood = fs.readFileSync(KNOWN_GOOD_PATH, 'utf-8').trim();
+        const currentHead = execSync('git rev-parse HEAD', {
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        }).trim();
+        if (knownGood && knownGood !== currentHead) {
+          execSync(`git reset --hard ${knownGood}`, { stdio: 'pipe' });
+          const nodeBinDir = path.dirname(process.execPath);
+          execSync('npm run build', {
+            stdio: 'pipe',
+            timeout: 120000,
+            env: { ...process.env, PATH: `${nodeBinDir}:${process.env.PATH}` },
+          });
+          fs.writeFileSync(BOOT_ATTEMPTS_PATH, '0');
+          logger.info(
+            { rolledBackTo: knownGood },
+            'Boot rollback successful, restarting',
+          );
+          process.exit(0);
+        }
+      }
+    } catch (rollbackErr) {
+      logger.fatal({ err: rollbackErr }, 'Boot rollback failed');
+    }
+  }
+
   // Crash on unhandled rejections instead of silently continuing in a broken state
   process.on('unhandledRejection', (err) => {
     logger.fatal({ err }, 'Unhandled promise rejection');
