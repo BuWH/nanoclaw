@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -33,6 +34,7 @@ import {
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
+import { GIT_LOCK_FILE_PATH, getStaleLockInfo } from './git-lock.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -651,6 +653,25 @@ function startHealthMonitor(): void {
     ).length;
     const pendingMessages = status.filter((s) => s.pendingMessages).length;
     const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+
+    // Worktree count for concurrency visibility
+    let worktreeCount = 0;
+    try {
+      const wtList = execSync('git worktree list --porcelain', {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+      worktreeCount = wtList
+        .split('\n')
+        .filter((l) => l.startsWith('worktree ')).length;
+    } catch {
+      /* non-fatal */
+    }
+
+    // Check for stale git lock files
+    const staleLock = getStaleLockInfo();
+
     logger.info(
       {
         uptimeMin: Math.round((Date.now() - startTime) / 60_000),
@@ -658,13 +679,29 @@ function startHealthMonitor(): void {
         pendingMessages,
         rssMb,
         lagMs: currentLagMs,
+        worktreeCount,
+        staleLock: staleLock
+          ? { pid: staleLock.pid, operation: staleLock.operation }
+          : null,
         queueMetrics: metrics,
       },
       'Heartbeat',
     );
   }, HEARTBEAT_INTERVAL);
 
-  // 3. Message loop stall detection
+  // 3. Periodic orphan container cleanup (every 10 minutes)
+  setInterval(
+    () => {
+      try {
+        cleanupOrphans({ quiet: true });
+      } catch (err) {
+        logger.warn({ err }, 'Periodic orphan cleanup failed');
+      }
+    },
+    10 * 60 * 1000,
+  );
+
+  // 4. Message loop stall detection
   //    The message loop updates lastMessageLoopTick every ~2s. If it hasn't
   //    been updated for 60s, the loop is stuck.
   const LOOP_STALL_THRESHOLD = 60_000;
