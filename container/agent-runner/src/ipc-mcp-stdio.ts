@@ -684,5 +684,81 @@ Uses the twitter-scraper API on the host machine.`,
   );
 }
 
+// --- Codex Integration Tools (main group only) ---
+
+const CODEX_RESULTS_DIR = path.join(IPC_DIR, 'codex_results');
+
+async function waitForCodexResult(
+  requestId: string,
+  maxWait = 300000,
+): Promise<{ success: boolean; message: string }> {
+  const resultFile = path.join(CODEX_RESULTS_DIR, `${requestId}.json`);
+  const pollInterval = 2000; // Poll every 2s (reviews take minutes, not seconds)
+  let elapsed = 0;
+
+  while (elapsed < maxWait) {
+    if (fs.existsSync(resultFile)) {
+      try {
+        const result = JSON.parse(fs.readFileSync(resultFile, 'utf-8'));
+        fs.unlinkSync(resultFile);
+        return result;
+      } catch (err) {
+        return { success: false, message: `Failed to read result: ${err}` };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    elapsed += pollInterval;
+  }
+
+  return { success: false, message: 'Codex review timed out waiting for result' };
+}
+
+if (isMain) {
+  server.tool(
+    'codex_review_pr',
+    `Request a Codex CLI code review for a GitHub pull request.
+
+Codex runs on the host machine using gpt-5.3-codex model. It clones the repo,
+reads the PR diff, analyzes the code, and posts review comments directly on the PR
+via \`gh pr review\`.
+
+Returns the review summary including any comments posted. Main group only.
+
+Use this when:
+- The user shares a PR link and wants a code review
+- After creating a PR via /self-modify to get automated feedback
+- The user explicitly asks for a Codex review
+
+After receiving the results:
+1. Present the review comments to the user
+2. Ask if they want you to fix the issues
+3. If yes, clone the repo, apply fixes, commit, and push`,
+    {
+      pr_url: z
+        .string()
+        .describe(
+          'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123) or shorthand (owner/repo#123)',
+        ),
+    },
+    async (args) => {
+      const requestId = `codexreview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      writeIpcFile(TASKS_DIR, {
+        type: 'codex_review_pr',
+        requestId,
+        prUrl: args.pr_url,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Codex reviews take significantly longer than X operations
+      const result = await waitForCodexResult(requestId, 300000);
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+        isError: !result.success,
+      };
+    },
+  );
+}
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
