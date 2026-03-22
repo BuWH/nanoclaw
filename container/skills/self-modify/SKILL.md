@@ -28,7 +28,9 @@ The live repo at `/workspace/extra/code/nanoclaw/` runs the active service with 
 **Never checkout feature branches there.** Clone to `/tmp/` instead:
 
 ```bash
-git clone https://github.com/BuWH/nanoclaw.git /tmp/nanoclaw-<feature>
+# Derive the remote URL from the live repo so forks work automatically
+ORIGIN_URL=$(git -C /workspace/extra/code/nanoclaw remote get-url origin)
+git clone "$ORIGIN_URL" /tmp/nanoclaw-<feature>
 cd /tmp/nanoclaw-<feature>
 git checkout -b agent/<descriptive-name>
 ```
@@ -89,6 +91,14 @@ If the user or CI reports issues:
 - Re-clone if the `/tmp/` directory was cleaned up
 - Checkout the existing branch, fix issues, push
 - Notify the user that fixes have been pushed
+
+### Step 7: Clean up
+
+After the PR is merged (or abandoned), remove the temporary clone:
+
+```bash
+rm -rf /tmp/nanoclaw-<feature>
+```
 
 ## After Merge
 
