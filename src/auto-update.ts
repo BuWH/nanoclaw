@@ -12,8 +12,10 @@
  */
 
 import { execSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 
+import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 
 const AUTO_UPDATE_INTERVAL = 60_000; // 60 seconds
@@ -22,6 +24,12 @@ const FETCH_TIMEOUT = 30_000;
 const PULL_TIMEOUT = 60_000;
 const BUILD_TIMEOUT = 120_000;
 const QUIESCE_TIMEOUT = 180_000; // Max 3 minutes to wait for containers to drain
+
+/** File written before restart so the next boot can report what changed. */
+export const UPDATE_CHANGELOG_PATH = path.join(
+  DATA_DIR,
+  'last-update-changelog.txt',
+);
 
 interface QueueHandle {
   getActiveCount(): number;
@@ -118,6 +126,25 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         timeout: PULL_TIMEOUT,
         env: execEnv,
       });
+
+      // Capture what changed between old HEAD and new HEAD for the
+      // startup notification after restart.
+      try {
+        const newHead = execSync('git rev-parse HEAD', {
+          cwd: projectRoot,
+          encoding: 'utf-8',
+        }).trim();
+        const log = execSync(
+          `git log --oneline --no-decorate ${local}..${newHead}`,
+          { cwd: projectRoot, encoding: 'utf-8' },
+        ).trim();
+        if (log) {
+          fs.mkdirSync(path.dirname(UPDATE_CHANGELOG_PATH), { recursive: true });
+          fs.writeFileSync(UPDATE_CHANGELOG_PATH, log, 'utf-8');
+        }
+      } catch (changelogErr) {
+        logger.warn({ err: changelogErr }, 'Failed to write update changelog');
+      }
 
       execSync('npm run build', {
         cwd: projectRoot,

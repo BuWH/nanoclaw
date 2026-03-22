@@ -73,7 +73,7 @@ import { startSchedulerLoop, triggerSchedulerDrain } from './task-scheduler.js';
 import { ButtonRows, Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { startXHealthCheck } from './x-health.js';
-import { startAutoUpdateLoop } from './auto-update.js';
+import { startAutoUpdateLoop, UPDATE_CHANGELOG_PATH } from './auto-update.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -927,14 +927,27 @@ async function main(): Promise<void> {
     process.exit(1);
   });
 
-  // Notify main group that the server has started
+  // Notify main group that the server has started.
+  // If we restarted due to auto-update, include what changed.
   const mainJid = Object.entries(registeredGroups).find(
     ([, g]) => g.isMain === true,
   )?.[0];
   if (mainJid) {
     const mainChannel = findChannel(channels, mainJid);
     if (mainChannel) {
-      mainChannel.sendMessage(mainJid, '服务已重启 ✅').catch((err) => {
+      let msg = '服务已重启 ✅';
+      try {
+        if (fs.existsSync(UPDATE_CHANGELOG_PATH)) {
+          const changelog = fs.readFileSync(UPDATE_CHANGELOG_PATH, 'utf-8').trim();
+          if (changelog) {
+            msg += '\n\n*更新内容:*\n' + changelog;
+          }
+          fs.unlinkSync(UPDATE_CHANGELOG_PATH);
+        }
+      } catch (changelogErr) {
+        logger.warn({ err: changelogErr }, 'Failed to read update changelog');
+      }
+      mainChannel.sendMessage(mainJid, msg).catch((err) => {
         logger.warn({ err }, 'Failed to send startup notification');
       });
     }
