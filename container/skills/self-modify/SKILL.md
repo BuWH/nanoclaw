@@ -10,7 +10,13 @@ description: >
 
 ## Prerequisites
 
-NanoClaw source code is at `/workspace/extra/code/nanoclaw/` (read-only mount of the live repo).
+NanoClaw source code is available inside the container. The exact path depends on group type:
+- **Main group**: `/workspace/project` (read-only mount of the live repo root)
+- **Additional mounts**: `/workspace/extra/<basename>` (from mount-allowlist.json)
+  - Read-write access requires `allowReadWrite: true` in the allowlist entry
+
+Check which paths are available: `ls /workspace/project /workspace/extra/ 2>/dev/null`
+
 Git and gh CLI are authenticated.
 
 ## Rules

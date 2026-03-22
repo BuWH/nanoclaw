@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { withGitLock } from './git-lock.js';
 import { logger } from './logger.js';
 
 const AUTO_UPDATE_INTERVAL = 60_000; // 60 seconds
@@ -32,6 +33,9 @@ export const UPDATE_CHANGELOG_PATH = path.join(
   DATA_DIR,
   'last-update-changelog.txt',
 );
+
+/** File that records the last known-good commit SHA for rollback. */
+export const UPDATE_KNOWN_GOOD_PATH = path.join(DATA_DIR, '.known-good-commit');
 
 interface QueueHandle {
   getActiveCount(): number;
@@ -162,11 +166,39 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
   let checking = false;
 
+  /** Prune stale worktrees and warn if count is high. */
+  const maintainWorktrees = () => {
+    try {
+      execSync('git worktree prune', {
+        cwd: projectRoot,
+        stdio: 'pipe',
+        timeout: 10000,
+      });
+      const worktreeList = execSync('git worktree list --porcelain', {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 10000,
+      });
+      const worktreeCount = worktreeList
+        .split('\n')
+        .filter((l) => l.startsWith('worktree ')).length;
+      if (worktreeCount > 8) {
+        logger.warn(
+          { worktreeCount },
+          'High worktree count — consider cleaning up stale worktrees',
+        );
+      }
+    } catch (err) {
+      logger.debug({ err }, 'Worktree maintenance failed (non-fatal)');
+    }
+  };
+
   const check = async () => {
     if (checking) return;
     checking = true;
     try {
-      // Phase 1: Fetch latest remote state (read-only, safe to do before quiesce).
+      // Phase 1: Fetch latest remote state (read-only, no lock needed).
       execSync('git fetch origin main', {
         cwd: projectRoot,
         stdio: 'ignore',
@@ -182,7 +214,9 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
       // Fast path: if HEAD already matches origin/main, nothing to do.
       // This avoids quiescing the queue on every 60s cycle.
-      if (currentHead === remote) return;
+      if (currentHead === remote) {
+        return;
+      }
 
       // We may need to update (or self-heal the branch). Use the more
       // expensive ancestor check after we know the SHAs differ.
@@ -190,7 +224,9 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       const onMain = branch === 'main';
 
       // If we're on main and local already contains remote, no update needed.
-      if (onMain && !hasRemoteUpdates(projectRoot, currentHead, remote)) return;
+      if (onMain && !hasRemoteUpdates(projectRoot, currentHead, remote)) {
+        return;
+      }
 
       logger.info(
         {
@@ -238,35 +274,58 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
       // Phase 4: Now that the queue is quiesced and no containers are
       // reading the working tree, safely recover the branch and clean
-      // dirty state.
-      if (!ensureOnMain(projectRoot)) return;
-      stashIfDirty(projectRoot);
+      // dirty state. Wrapped in git lock to prevent concurrent git ops.
+      const pullResult = await withGitLock('auto-update:pull', () => {
+        if (!ensureOnMain(projectRoot)) return { ok: false as const };
+        stashIfDirty(projectRoot);
 
-      // Re-read HEAD after potential branch switch — it may have changed.
-      const local = git('rev-parse HEAD', projectRoot);
+        // Re-read HEAD after potential branch switch -- it may have changed.
+        const localSha = git('rev-parse HEAD', projectRoot);
 
-      // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
-      // fails (e.g. local diverged from remote due to leftover commits),
-      // fall back to reset --hard. The main checkout is a production
-      // environment — local-only commits here are never intentional.
-      try {
-        execSync('git pull --ff-only origin main', {
-          cwd: projectRoot,
-          stdio: 'pipe',
-          timeout: PULL_TIMEOUT,
-          env: execEnv,
-        });
-      } catch (pullErr) {
-        logger.warn(
-          { err: pullErr },
-          'Fast-forward pull failed — falling back to hard reset',
-        );
-        execSync('git reset --hard origin/main', {
-          cwd: projectRoot,
-          stdio: 'pipe',
-          timeout: PULL_TIMEOUT,
-        });
-      }
+        // Save known-good commit for rollback
+        try {
+          fs.mkdirSync(path.dirname(UPDATE_KNOWN_GOOD_PATH), {
+            recursive: true,
+          });
+          fs.writeFileSync(UPDATE_KNOWN_GOOD_PATH, localSha);
+        } catch (saveErr) {
+          logger.warn({ err: saveErr }, 'Failed to save known-good commit');
+        }
+
+        // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
+        // fails (e.g. local diverged from remote due to leftover commits),
+        // fall back to reset --hard. The main checkout is a production
+        // environment -- local-only commits here are never intentional.
+        try {
+          execSync('git pull --ff-only origin main', {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: PULL_TIMEOUT,
+            env: execEnv,
+          });
+        } catch (pullErr) {
+          logger.warn(
+            { err: pullErr },
+            'Fast-forward pull failed — falling back to hard reset',
+          );
+          execSync('git reset --hard origin/main', {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: PULL_TIMEOUT,
+          });
+        }
+
+        return { ok: true as const, localSha };
+      });
+
+      if (!pullResult.ok) return;
+
+      // For changelog: use `currentHead` captured in Phase 2 (before quiesce,
+      // before ensureOnMain). The `localSha` from the lock closure is read
+      // AFTER ensureOnMain, which may have already moved HEAD to origin/main
+      // via `git checkout main`, making `localSha == newHead` and producing
+      // an empty changelog range.
+      const changelogBase = currentHead;
 
       // Collect a human-readable summary of what changed.  Strip commit
       // hashes and conventional commit prefixes (fix:, feat:, etc.).
@@ -274,7 +333,7 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       let changelogText = '';
       try {
         const newHead = git('rev-parse HEAD', projectRoot);
-        const range = `${local}..${newHead}`;
+        const range = `${changelogBase}..${newHead}`;
 
         // Strategy 1: merge commit subjects with "Merge pull request" prefix
         // stripped — gives the PR title, which is the most user-friendly summary.
@@ -333,12 +392,54 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         logger.warn({ err: changelogErr }, 'Failed to build changelog text');
       }
 
-      execSync('npm run build', {
-        cwd: projectRoot,
-        stdio: 'pipe',
-        timeout: BUILD_TIMEOUT,
-        env: execEnv,
-      });
+      try {
+        execSync('npm run build', {
+          cwd: projectRoot,
+          stdio: 'pipe',
+          timeout: BUILD_TIMEOUT,
+          env: execEnv,
+        });
+      } catch (buildErr) {
+        logger.error(
+          { err: buildErr },
+          'Build failed after pull — rolling back to known-good commit',
+        );
+        try {
+          const knownGood = fs
+            .readFileSync(UPDATE_KNOWN_GOOD_PATH, 'utf-8')
+            .trim();
+          if (!/^[0-9a-f]{40}$/i.test(knownGood)) {
+            logger.error(
+              { knownGood },
+              'Invalid known-good SHA, skipping rollback',
+            );
+            process.exit(1);
+          }
+          execSync(`git reset --hard ${knownGood}`, {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: PULL_TIMEOUT,
+          });
+          execSync('npm run build', {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: BUILD_TIMEOUT,
+            env: execEnv,
+          });
+          logger.info(
+            { rolledBackTo: knownGood },
+            'Rollback successful, continuing without restart',
+          );
+          if (queue) queue.unquiesce();
+          return; // Don't exit — we're back on known-good code
+        } catch (rollbackErr) {
+          logger.fatal(
+            { err: rollbackErr },
+            'Rollback also failed — exiting for manual intervention',
+          );
+          process.exit(1);
+        }
+      }
 
       // Persist changelog only after a successful build so a failed
       // update doesn't leave a stale file that misleads the next restart.
@@ -369,6 +470,7 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       if (queue) queue.unquiesce();
       logger.error({ err }, 'Auto-update check failed');
     } finally {
+      maintainWorktrees();
       checking = false;
     }
   };

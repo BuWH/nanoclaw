@@ -27,6 +27,8 @@ vi.mock('./config.js', () => ({
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 5000,
+  CONTAINER_MEMORY_LIMIT: '4g',
+  CONTAINER_CPU_LIMIT: '2',
   CREDENTIAL_PROXY_PORT: 3001,
   DATA_DIR: '/tmp/nanoclaw-e2e-data',
   FIRST_OUTPUT_TIMEOUT: 3000,

@@ -100,8 +100,17 @@ export function ensureContainerRuntimeRunning(): void {
   }
 }
 
-/** Kill orphaned NanoClaw containers from previous runs. */
-export function cleanupOrphans(): void {
+/** Kill orphaned NanoClaw containers from previous runs.
+ *  Returns the number of containers cleaned up.
+ *  Safe to call periodically -- a guard prevents concurrent runs. */
+let cleanupRunning = false;
+
+export function cleanupOrphans(options: { quiet?: boolean } = {}): number {
+  if (cleanupRunning) {
+    logger.debug('Orphan cleanup already in progress, skipping');
+    return 0;
+  }
+  cleanupRunning = true;
   try {
     const output = execSync(
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
@@ -116,12 +125,18 @@ export function cleanupOrphans(): void {
       }
     }
     if (orphans.length > 0) {
-      logger.info(
+      const logFn = options.quiet ? logger.debug : logger.info;
+      logFn.call(
+        logger,
         { count: orphans.length, names: orphans },
         'Stopped orphaned containers',
       );
     }
+    return orphans.length;
   } catch (err) {
     logger.warn({ err }, 'Failed to clean up orphaned containers');
+    return 0;
+  } finally {
+    cleanupRunning = false;
   }
 }
