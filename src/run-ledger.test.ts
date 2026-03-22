@@ -84,6 +84,31 @@ describe('transitionRun', () => {
     expect(result).toBeNull();
   });
 
+  it('allows running -> acked for tasks that complete without streaming', () => {
+    const run = createRun('task', 'group@g.us', 'main', 'test');
+    transitionRun(run.id, 'running');
+
+    const result = transitionRun(run.id, 'acked');
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe('acked');
+  });
+
+  it('transitions from running to failed on consecutive failure skip path', () => {
+    const run = createRun('message', 'group@g.us', 'main', 'test', 0);
+    transitionRun(run.id, 'running');
+
+    // Simulates the consecutive-failure skip path in processGroupMessages
+    const result = transitionRun(run.id, 'failed', {
+      error: 'Consecutive failures — messages skipped to break retry loop',
+    });
+    // maxRetries=0 so auto-promotes to dead_letter
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe('dead_letter');
+    expect(result!.error).toBe(
+      'Consecutive failures — messages skipped to break retry loop',
+    );
+  });
+
   it('auto-promotes failed to dead_letter when retryCount >= maxRetries', () => {
     const run = createRun('message', 'group@g.us', 'main', 'test', 0);
     // maxRetries=0, retryCount=0, so 0 >= 0 is true
@@ -287,5 +312,25 @@ describe('pruneOldRuns', () => {
 
     const history = getRunHistory();
     expect(history).toHaveLength(1);
+  });
+
+  it('removes old failed entries', () => {
+    const run = createRun('message', 'group@g.us', 'main', 'failed-old', 3);
+    transitionRun(run.id, 'running');
+    transitionRun(run.id, 'failed', { error: 'some error' });
+
+    // Set updated_at to 10 days ago
+    const oldDate = new Date(
+      Date.now() - 10 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    getDb()
+      .prepare('UPDATE run_ledger SET updated_at = ? WHERE id = ?')
+      .run(oldDate, run.id);
+
+    const pruned = pruneOldRuns(7);
+    expect(pruned).toBe(1);
+
+    const history = getRunHistory();
+    expect(history).toHaveLength(0);
   });
 });

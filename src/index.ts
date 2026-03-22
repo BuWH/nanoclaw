@@ -374,6 +374,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         { group: group.name, messageCount: missedMessages.length },
         'Consecutive failures for group — skipping problematic messages to break retry loop',
       );
+      // Transition to failed — auto-promotes to dead_letter when retries exhausted
+      transitionRun(run.id, 'failed', {
+        error: 'Consecutive failures — messages skipped to break retry loop',
+      });
       // Cursor was already advanced before running the agent; just keep it.
       return true;
     }

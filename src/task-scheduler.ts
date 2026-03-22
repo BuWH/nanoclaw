@@ -203,6 +203,7 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+  let sendFailed = false;
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -293,6 +294,7 @@ async function runTask(
                 { taskId: task.id, err: retryErr },
                 'Task result send retry failed (message in dead letter)',
               );
+              sendFailed = true;
               transitionRun(run.id, 'failed', {
                 error: 'message delivery failed after retry',
               });
@@ -340,7 +342,7 @@ async function runTask(
 
     if (error) {
       transitionRun(run.id, 'failed', { error });
-    } else {
+    } else if (!sendFailed) {
       transitionRun(run.id, 'acked');
     }
   } catch (err) {

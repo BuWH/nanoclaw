@@ -34,7 +34,7 @@ const MAX_PAYLOAD_LENGTH = 4096;
 // Valid state transitions
 const VALID_TRANSITIONS: Record<RunStatus, RunStatus[]> = {
   queued: ['running'],
-  running: ['streaming', 'failed'],
+  running: ['streaming', 'acked', 'failed'],
   streaming: ['reply_sent', 'failed'],
   reply_sent: ['acked', 'failed'],
   acked: [],
@@ -236,7 +236,7 @@ export function pruneOldRuns(olderThanDays: number = 7): number {
 
   const result = db
     .prepare(
-      `DELETE FROM run_ledger WHERE status IN ('acked', 'dead_letter') AND updated_at < ?`,
+      `DELETE FROM run_ledger WHERE status IN ('acked', 'dead_letter', 'failed') AND updated_at < ?`,
     )
     .run(cutoff);
 
