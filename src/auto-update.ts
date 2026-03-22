@@ -127,20 +127,28 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         env: execEnv,
       });
 
-      // Capture what changed between old HEAD and new HEAD for the
-      // startup notification after restart.
+      // Capture a human-readable summary of what changed for the startup
+      // notification after restart.  Strip commit hashes and conventional
+      // commit prefixes (fix:, feat:, etc.) — the user wants plain language.
       try {
         const newHead = execSync('git rev-parse HEAD', {
           cwd: projectRoot,
           encoding: 'utf-8',
         }).trim();
-        const log = execSync(
-          `git log --oneline --no-decorate ${local}..${newHead}`,
+        const subjects = execSync(
+          `git log --format=%s --no-merges ${local}..${newHead}`,
           { cwd: projectRoot, encoding: 'utf-8' },
         ).trim();
-        if (log) {
-          fs.mkdirSync(path.dirname(UPDATE_CHANGELOG_PATH), { recursive: true });
-          fs.writeFileSync(UPDATE_CHANGELOG_PATH, log, 'utf-8');
+        if (subjects) {
+          const lines = subjects
+            .split('\n')
+            .map((s) => s.replace(/^[a-z]+(\([^)]*\))?:\s*/i, '').trim())
+            .filter(Boolean)
+            .map((s) => `• ${s.charAt(0).toUpperCase()}${s.slice(1)}`);
+          fs.mkdirSync(path.dirname(UPDATE_CHANGELOG_PATH), {
+            recursive: true,
+          });
+          fs.writeFileSync(UPDATE_CHANGELOG_PATH, lines.join('\n'), 'utf-8');
         }
       } catch (changelogErr) {
         logger.warn({ err: changelogErr }, 'Failed to write update changelog');
