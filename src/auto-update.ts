@@ -12,8 +12,10 @@
  */
 
 import { execSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 
+import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 
 const AUTO_UPDATE_INTERVAL = 60_000; // 60 seconds
@@ -22,6 +24,12 @@ const FETCH_TIMEOUT = 30_000;
 const PULL_TIMEOUT = 60_000;
 const BUILD_TIMEOUT = 120_000;
 const QUIESCE_TIMEOUT = 180_000; // Max 3 minutes to wait for containers to drain
+
+/** File written before restart so the next boot can report what changed. */
+export const UPDATE_CHANGELOG_PATH = path.join(
+  DATA_DIR,
+  'last-update-changelog.txt',
+);
 
 interface QueueHandle {
   getActiveCount(): number;
@@ -119,12 +127,50 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         env: execEnv,
       });
 
+      // Collect a human-readable summary of what changed.  Strip commit
+      // hashes and conventional commit prefixes (fix:, feat:, etc.).
+      // Written to disk only after a successful build (see below).
+      let changelogText = '';
+      try {
+        const newHead = execSync('git rev-parse HEAD', {
+          cwd: projectRoot,
+          encoding: 'utf-8',
+        }).trim();
+        const subjects = execSync(
+          `git log --format=%s --no-merges ${local}..${newHead}`,
+          { cwd: projectRoot, encoding: 'utf-8' },
+        ).trim();
+        if (subjects) {
+          changelogText = subjects
+            .split('\n')
+            .map((s) => s.replace(/^[a-z]+(\([^)]*\))?:\s*/i, '').trim())
+            .filter(Boolean)
+            .map((s) => `• ${s.charAt(0).toUpperCase()}${s.slice(1)}`)
+            .join('\n');
+        }
+      } catch (changelogErr) {
+        logger.warn({ err: changelogErr }, 'Failed to build changelog text');
+      }
+
       execSync('npm run build', {
         cwd: projectRoot,
         stdio: 'pipe',
         timeout: BUILD_TIMEOUT,
         env: execEnv,
       });
+
+      // Persist changelog only after a successful build so a failed
+      // update doesn't leave a stale file that misleads the next restart.
+      if (changelogText) {
+        try {
+          fs.mkdirSync(path.dirname(UPDATE_CHANGELOG_PATH), {
+            recursive: true,
+          });
+          fs.writeFileSync(UPDATE_CHANGELOG_PATH, changelogText, 'utf-8');
+        } catch (writeErr) {
+          logger.warn({ err: writeErr }, 'Failed to write update changelog');
+        }
+      }
 
       logger.info('Auto-update rebuild complete, restarting');
       process.exit(0);
