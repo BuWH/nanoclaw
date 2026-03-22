@@ -121,48 +121,22 @@ function execCommand(
 }
 
 /**
- * Ensure the repo is cloned and the PR branch is checked out.
- * Reuses cached clones at /tmp/codex-review-{owner}-{repo}.
+ * Clone the repo and check out the PR branch into a temporary directory.
+ * The caller is responsible for cleaning up the directory after use.
  */
 async function prepareRepo(
   owner: string,
   repo: string,
   prNumber: number,
 ): Promise<{ repoDir: string } | { error: string }> {
-  const repoDir = `/tmp/codex-review-${owner}-${repo}`;
+  const repoDir = `/tmp/codex-review-${owner}-${repo}-${Date.now()}`;
 
-  if (fs.existsSync(path.join(repoDir, '.git'))) {
-    // Existing clone: fetch and checkout PR
-    logger.info({ repoDir, prNumber }, 'Reusing cached repo clone');
-
-    const fetch = await execCommand('git', ['fetch', 'origin'], {
-      cwd: repoDir,
-    });
-    if (fetch.code !== 0) {
-      logger.warn(
-        { repoDir, stderr: fetch.stderr },
-        'Git fetch failed, re-cloning',
-      );
-      fs.rmSync(repoDir, { recursive: true, force: true });
-    } else {
-      const checkout = await execCommand(
-        'gh',
-        ['pr', 'checkout', String(prNumber), '--force'],
-        { cwd: repoDir },
-      );
-      if (checkout.code === 0) {
-        return { repoDir };
-      }
-      logger.warn(
-        { repoDir, stderr: checkout.stderr },
-        'PR checkout failed on cached clone, re-cloning',
-      );
-      fs.rmSync(repoDir, { recursive: true, force: true });
-    }
+  // Remove stale clone if it somehow exists
+  if (fs.existsSync(repoDir)) {
+    fs.rmSync(repoDir, { recursive: true, force: true });
   }
 
-  // Fresh clone
-  logger.info({ owner, repo, repoDir }, 'Cloning repository');
+  logger.info({ owner, repo, repoDir }, 'Cloning repository for Codex review');
   const clone = await execCommand(
     'gh',
     ['repo', 'clone', `${owner}/${repo}`, repoDir],
@@ -178,6 +152,8 @@ async function prepareRepo(
     { cwd: repoDir },
   );
   if (checkout.code !== 0) {
+    // Clean up failed clone
+    fs.rmSync(repoDir, { recursive: true, force: true });
     return {
       error: `Failed to checkout PR #${prNumber}: ${checkout.stderr}`,
     };
@@ -395,6 +371,20 @@ export async function handleCodexIpc(
 
       // Run the Codex review
       result = await runCodexReview(prep.repoDir, owner, repo, prNumber);
+
+      // Clean up the temporary clone -- it is only needed during the review
+      try {
+        fs.rmSync(prep.repoDir, { recursive: true, force: true });
+        logger.debug(
+          { repoDir: prep.repoDir },
+          'Cleaned up temporary repo clone',
+        );
+      } catch (err) {
+        logger.warn(
+          { repoDir: prep.repoDir, err },
+          'Failed to clean up temporary repo clone',
+        );
+      }
       break;
     }
 
