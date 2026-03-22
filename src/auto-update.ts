@@ -284,7 +284,9 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
         // Save known-good commit for rollback
         try {
-          fs.mkdirSync(path.dirname(UPDATE_KNOWN_GOOD_PATH), { recursive: true });
+          fs.mkdirSync(path.dirname(UPDATE_KNOWN_GOOD_PATH), {
+            recursive: true,
+          });
           fs.writeFileSync(UPDATE_KNOWN_GOOD_PATH, localSha);
         } catch (saveErr) {
           logger.warn({ err: saveErr }, 'Failed to save known-good commit');
@@ -317,7 +319,13 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       });
 
       if (!pullResult.ok) return;
-      const local = pullResult.localSha;
+
+      // For changelog: use `currentHead` captured in Phase 2 (before quiesce,
+      // before ensureOnMain). The `localSha` from the lock closure is read
+      // AFTER ensureOnMain, which may have already moved HEAD to origin/main
+      // via `git checkout main`, making `localSha == newHead` and producing
+      // an empty changelog range.
+      const changelogBase = currentHead;
 
       // Collect a human-readable summary of what changed.  Strip commit
       // hashes and conventional commit prefixes (fix:, feat:, etc.).
@@ -325,7 +333,7 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       let changelogText = '';
       try {
         const newHead = git('rev-parse HEAD', projectRoot);
-        const range = `${local}..${newHead}`;
+        const range = `${changelogBase}..${newHead}`;
 
         // Strategy 1: merge commit subjects with "Merge pull request" prefix
         // stripped — gives the PR title, which is the most user-friendly summary.
