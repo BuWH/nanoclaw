@@ -94,6 +94,15 @@ function loadState(): void {
   }
   sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
+
+  // Set main group for queue priority scheduling
+  const mainJid = Object.entries(registeredGroups).find(
+    ([, g]) => g.isMain === true,
+  )?.[0];
+  if (mainJid) {
+    queue.setMainGroup(mainJid);
+  }
+
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
@@ -119,6 +128,11 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
+
+  // Update queue priority if this is the main group
+  if (group.isMain === true) {
+    queue.setMainGroup(jid);
+  }
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
@@ -385,6 +399,7 @@ async function runAgent(
     isMain,
     queue.getStatus(),
     registeredGroups,
+    queue.getQueueMetrics(),
   );
 
   // Wrap onOutput to track session ID from streamed results
@@ -605,6 +620,7 @@ function startHealthMonitor(): void {
   const HEARTBEAT_INTERVAL = 5 * 60 * 1000;
   setInterval(() => {
     const status = queue.getStatus();
+    const metrics = queue.getQueueMetrics();
     const activeContainers = status.filter(
       (s) => s.activeMessage || s.activeTask,
     ).length;
@@ -617,6 +633,7 @@ function startHealthMonitor(): void {
         pendingMessages,
         rssMb,
         lagMs: currentLagMs,
+        queueMetrics: metrics,
       },
       'Heartbeat',
     );

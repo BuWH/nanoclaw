@@ -868,6 +868,13 @@ export interface QueueStatusEntry {
   taskContainerName: string | null;
 }
 
+export interface QueueMetrics {
+  activeCount: number;
+  maxContainers: number;
+  waitingByPriority: { mainMessages: number; messages: number; tasks: number };
+  reservedSlotAvailable: boolean;
+}
+
 /**
  * Write queue status snapshot for the container to read.
  * Main group sees all entries; non-main groups see only their own.
@@ -878,6 +885,7 @@ export function writeQueueStatusSnapshot(
   isMain: boolean,
   entries: QueueStatusEntry[],
   registeredGroups: Record<string, { name: string; folder: string }>,
+  metrics?: QueueMetrics,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
@@ -903,6 +911,7 @@ export function writeQueueStatusSnapshot(
     JSON.stringify(
       {
         entries: visibleEntries,
+        ...(metrics ? { metrics } : {}),
         timestamp: new Date().toISOString(),
       },
       null,

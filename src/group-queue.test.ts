@@ -961,4 +961,280 @@ describe('GroupQueue', () => {
 
     expect(processMessages).toHaveBeenCalledTimes(1);
   });
+
+  // --- Priority queue and main group reservation ---
+
+  describe('priority queue', () => {
+    it('main group message starts even when non-main slots are full', async () => {
+      const completionCallbacks: Array<() => void> = [];
+      const started: string[] = [];
+
+      const processMessages = vi.fn(async (groupJid: string) => {
+        started.push(groupJid);
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+        return true;
+      });
+
+      queue.setProcessMessagesFn(processMessages);
+      queue.setMainGroup('main@g.us');
+
+      // Fill 1 slot (MAX_CONCURRENT_CONTAINERS = 2 in test)
+      // Non-main can use at most MAX - 1 = 1 when main has pending work
+      queue.enqueueMessageCheck('other@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Main should still be able to start (reserved slot)
+      queue.enqueueMessageCheck('main@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(started).toContain('main@g.us');
+      expect(started).toContain('other@g.us');
+
+      for (const cb of completionCallbacks) cb();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    it('non-main group cannot use the reserved slot when main has pending work', async () => {
+      const completionCallbacks: Array<() => void> = [];
+      const started: string[] = [];
+
+      const processMessages = vi.fn(async (groupJid: string) => {
+        started.push(groupJid);
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+        return true;
+      });
+
+      queue.setProcessMessagesFn(processMessages);
+      queue.setMainGroup('main@g.us');
+
+      // Fill 1 slot with other1
+      queue.enqueueMessageCheck('other1@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Queue main message (main has pending work now)
+      // But first, fill the last slot to block main too
+      // Actually with MAX=2: other1 uses slot 1, main can use slot 2
+      // Let's fill both slots first
+      queue.enqueueMessageCheck('other2@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Now both slots are full. Queue main and another non-main.
+      queue.enqueueMessageCheck('main@g.us');
+      queue.enqueueMessageCheck('other3@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Main and other3 should both be waiting
+      expect(started).toEqual(['other1@g.us', 'other2@g.us']);
+
+      // Free one slot -- main should get it (priority 0), not other3 (priority 1)
+      completionCallbacks[0]();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(started).toContain('main@g.us');
+      expect(started).not.toContain('other3@g.us');
+
+      // Free another slot -- now other3 should start
+      completionCallbacks[1]();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(started).toContain('other3@g.us');
+
+      for (const cb of completionCallbacks.slice(2)) cb();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    it('soft reserve: non-main can use all slots when main has no pending work', async () => {
+      const completionCallbacks: Array<() => void> = [];
+      const started: string[] = [];
+
+      const processMessages = vi.fn(async (groupJid: string) => {
+        started.push(groupJid);
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+        return true;
+      });
+
+      queue.setProcessMessagesFn(processMessages);
+      queue.setMainGroup('main@g.us');
+
+      // Main has no pending work -- non-main should be able to use both slots
+      queue.enqueueMessageCheck('other1@g.us');
+      queue.enqueueMessageCheck('other2@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(started).toEqual(['other1@g.us', 'other2@g.us']);
+      expect(queue['activeCount']).toBe(2);
+
+      for (const cb of completionCallbacks) cb();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    it('tasks have lowest priority in the waiting queue', async () => {
+      const completionCallbacks: Array<() => void> = [];
+      const started: string[] = [];
+
+      const processMessages = vi.fn(async (groupJid: string) => {
+        started.push(`msg:${groupJid}`);
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+        return true;
+      });
+
+      queue.setProcessMessagesFn(processMessages);
+      queue.setMainGroup('main@g.us');
+
+      // Fill both slots
+      queue.enqueueMessageCheck('fill1@g.us');
+      queue.enqueueMessageCheck('fill2@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Queue a task (priority 2), then a message (priority 1), then main (priority 0)
+      const taskFn = vi.fn(async () => {
+        started.push('task:other@g.us');
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+      });
+      queue.enqueueTask('other@g.us', 'task-1', taskFn);
+      queue.enqueueMessageCheck('other@g.us');
+      queue.enqueueMessageCheck('main@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Free one slot -- main should start first (priority 0)
+      completionCallbacks[0]();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(started).toContain('msg:main@g.us');
+
+      // Free another slot -- other message should start (priority 1)
+      completionCallbacks[1]();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(started).toContain('msg:other@g.us');
+
+      // Free another slot -- task should start last (priority 2)
+      completionCallbacks[2]();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(started).toContain('task:other@g.us');
+
+      for (const cb of completionCallbacks.slice(3)) cb();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    it('preempts non-main idle container when main message arrives at full capacity', async () => {
+      const fsModule = await import('fs');
+      const completionCallbacks: Array<() => void> = [];
+      const started: string[] = [];
+
+      const processMessages = vi.fn(async (groupJid: string) => {
+        started.push(groupJid);
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+        return true;
+      });
+
+      queue.setProcessMessagesFn(processMessages);
+      queue.setMainGroup('main@g.us');
+
+      // Fill both slots
+      queue.enqueueMessageCheck('other1@g.us');
+      queue.enqueueMessageCheck('other2@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Register process for other1 so closeStdin can work
+      queue.registerProcess(
+        'other1@g.us',
+        {} as any,
+        'container-other1',
+        'other1-folder',
+      );
+
+      // Mark other1 as idle
+      queue.notifyIdle('other1@g.us');
+
+      const writeFileSync = vi.mocked(fsModule.default.writeFileSync);
+      writeFileSync.mockClear();
+
+      // Main message arrives at full capacity -- should preempt idle other1
+      queue.enqueueMessageCheck('main@g.us');
+
+      const closeWrites = writeFileSync.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+      );
+      expect(closeWrites).toHaveLength(1);
+      expect(closeWrites[0][0]).toContain('other1-folder');
+
+      for (const cb of completionCallbacks) cb();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    it('getQueueMetrics returns correct priority breakdown', async () => {
+      const completionCallbacks: Array<() => void> = [];
+
+      const processMessages = vi.fn(async () => {
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+        return true;
+      });
+
+      queue.setProcessMessagesFn(processMessages);
+      queue.setMainGroup('main@g.us');
+
+      // Fill both slots
+      queue.enqueueMessageCheck('fill1@g.us');
+      queue.enqueueMessageCheck('fill2@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Queue items at different priorities
+      queue.enqueueMessageCheck('main@g.us'); // priority 0
+      queue.enqueueMessageCheck('other@g.us'); // priority 1
+      const taskFn = vi.fn(async () => {});
+      queue.enqueueTask('task-group@g.us', 'task-1', taskFn); // priority 2
+
+      const metrics = queue.getQueueMetrics();
+      expect(metrics.activeCount).toBe(2);
+      expect(metrics.maxContainers).toBe(2);
+      expect(metrics.waitingByPriority.mainMessages).toBe(1);
+      expect(metrics.waitingByPriority.messages).toBe(1);
+      expect(metrics.waitingByPriority.tasks).toBe(1);
+
+      for (const cb of completionCallbacks) cb();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    it('setMainGroup updates queue priority behavior', async () => {
+      const completionCallbacks: Array<() => void> = [];
+      const started: string[] = [];
+
+      const processMessages = vi.fn(async (groupJid: string) => {
+        started.push(groupJid);
+        await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+        return true;
+      });
+
+      queue.setProcessMessagesFn(processMessages);
+
+      // No main group set yet -- all treated equally
+      queue.enqueueMessageCheck('group1@g.us');
+      queue.enqueueMessageCheck('group2@g.us');
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Now set main group
+      queue.setMainGroup('group1@g.us');
+
+      // Queue messages
+      queue.enqueueMessageCheck('group3@g.us');
+      queue.enqueueMessageCheck('group1@g.us'); // now main -- priority 0
+
+      // Free a slot
+      completionCallbacks[0]();
+      await vi.advanceTimersByTimeAsync(10);
+
+      // group1 (main) should have started before group3
+      const mainIdx = started.indexOf('group1@g.us');
+      const otherIdx = started.indexOf('group3@g.us');
+      // group1 appears twice (first at start, second after drain)
+      const secondMainIdx = started.lastIndexOf('group1@g.us');
+      expect(secondMainIdx).toBeGreaterThan(1); // it was drained
+      // group3 should come after or equal (may not have started yet)
+
+      for (const cb of completionCallbacks.slice(1)) cb();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+  });
 });

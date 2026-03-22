@@ -11,16 +11,31 @@ interface QueuedTask {
   fn: () => Promise<void>;
 }
 
+/**
+ * Priority tiers for the unified waiting queue.
+ * Lower number = higher priority.
+ */
+const PRIORITY_MAIN_MESSAGE = 0;
+const PRIORITY_MESSAGE = 1;
+const PRIORITY_TASK = 2;
+
+interface WaitingEntry {
+  groupJid: string;
+  type: 'message' | 'task';
+  priority: number;
+  task?: QueuedTask;
+}
+
 const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 5000;
 
 /**
  * Per-group state with separate tracking for message and task containers.
  *
- * Messages and tasks run in independent "lanes" so a long-running background
- * task (e.g. tweet aggregation) never blocks the user from getting a quick
- * response.  Both lanes still share the global concurrency limit
- * (MAX_CONCURRENT_CONTAINERS) to prevent resource exhaustion.
+ * Messages and tasks run in independent "lanes" within each group so a
+ * long-running background task never blocks the user from getting a quick
+ * response.  All lanes share a single global concurrency pool with
+ * priority-based scheduling and a soft-reserved slot for the main group.
  */
 interface GroupState {
   // Message lane
@@ -44,7 +59,8 @@ interface GroupState {
 export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
-  private waitingGroups: string[] = [];
+  private waitingQueue: WaitingEntry[] = [];
+  private mainGroupJid: string | null = null;
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
@@ -73,6 +89,101 @@ export class GroupQueue {
     return state;
   }
 
+  // ── Priority / capacity helpers ──────────────────────────────────────
+
+  /**
+   * Set the main group JID for priority scheduling.
+   * The main group gets a soft-reserved slot and highest queue priority.
+   */
+  setMainGroup(jid: string): void {
+    this.mainGroupJid = jid;
+    logger.info({ mainGroupJid: jid }, 'Main group set for queue priority');
+  }
+
+  /**
+   * Whether the main group can start a new container.
+   * Main can use ALL slots (including the reserved one).
+   */
+  private canStartMain(): boolean {
+    return this.activeCount < MAX_CONCURRENT_CONTAINERS;
+  }
+
+  /**
+   * Whether a non-main group can start a new container.
+   * When the main group has pending work, one slot is reserved for it.
+   * When the main group is idle, all slots are available.
+   */
+  private canStartNonMain(): boolean {
+    const limit = this.mainHasPending()
+      ? MAX_CONCURRENT_CONTAINERS - 1
+      : MAX_CONCURRENT_CONTAINERS;
+    return this.activeCount < limit;
+  }
+
+  /**
+   * Check if the main group has any pending work (messages or tasks)
+   * that could need the reserved slot.
+   */
+  private mainHasPending(): boolean {
+    if (!this.mainGroupJid) return false;
+    const state = this.groups.get(this.mainGroupJid);
+    if (!state) return false;
+    return state.pendingMessages || state.pendingTasks.length > 0;
+  }
+
+  /**
+   * Insert an entry into the waiting queue, sorted by priority.
+   * Within the same priority, entries are FIFO (appended after existing same-priority entries).
+   */
+  private addToWaitingQueue(entry: WaitingEntry): void {
+    // Deduplicate: don't add if an identical entry already exists
+    const isDuplicate = this.waitingQueue.some(
+      (e) =>
+        e.groupJid === entry.groupJid &&
+        e.type === entry.type &&
+        (entry.type === 'message' || e.task?.id === entry.task?.id),
+    );
+    if (isDuplicate) return;
+
+    const idx = this.waitingQueue.findIndex((e) => e.priority > entry.priority);
+    if (idx === -1) {
+      this.waitingQueue.push(entry);
+    } else {
+      this.waitingQueue.splice(idx, 0, entry);
+    }
+  }
+
+  /**
+   * Try to preempt an idle-waiting container to free a slot for main.
+   * Prefers non-main idle containers. Returns true if a preemption was initiated.
+   */
+  private preemptIdleContainer(): boolean {
+    // Prefer non-main idle containers
+    for (const [jid, state] of this.groups) {
+      if (jid === this.mainGroupJid) continue;
+      if (state.activeMessage && state.idleWaiting) {
+        logger.info(
+          { preemptedJid: jid },
+          'Preempting idle container to free slot for main group',
+        );
+        this.closeStdin(jid);
+        return true;
+      }
+    }
+    // Last resort: preempt main's own idle container (e.g., old session)
+    if (this.mainGroupJid) {
+      const mainState = this.groups.get(this.mainGroupJid);
+      if (mainState?.activeMessage && mainState.idleWaiting) {
+        logger.info('Preempting main group idle container for new main message');
+        this.closeStdin(this.mainGroupJid);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ── Public API ───────────────────────────────────────────────────────
+
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
   }
@@ -94,13 +205,29 @@ export class GroupQueue {
       return;
     }
 
-    if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
+    const isMain = groupJid === this.mainGroupJid;
+    const canStart = isMain ? this.canStartMain() : this.canStartNonMain();
+
+    if (!canStart) {
       state.pendingMessages = true;
-      if (!this.waitingGroups.includes(groupJid)) {
-        this.waitingGroups.push(groupJid);
+
+      // Main message at full capacity: try to preempt an idle container
+      if (isMain) {
+        this.preemptIdleContainer();
       }
+
+      this.addToWaitingQueue({
+        groupJid,
+        type: 'message',
+        priority: isMain ? PRIORITY_MAIN_MESSAGE : PRIORITY_MESSAGE,
+      });
       logger.debug(
-        { groupJid, activeCount: this.activeCount },
+        {
+          groupJid,
+          activeCount: this.activeCount,
+          isMain,
+          waitingDepth: this.waitingQueue.length,
+        },
         'At concurrency limit, message queued',
       );
       return;
@@ -139,6 +266,21 @@ export class GroupQueue {
       );
       return;
     }
+    // Also check the global waiting queue for duplicate tasks
+    if (
+      this.waitingQueue.some(
+        (e) =>
+          e.type === 'task' &&
+          e.groupJid === groupJid &&
+          e.task?.id === taskId,
+      )
+    ) {
+      logger.info(
+        { groupJid, taskId },
+        'Task already in waiting queue, skipping duplicate',
+      );
+      return;
+    }
 
     if (state.activeTask) {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
@@ -155,24 +297,30 @@ export class GroupQueue {
       this.closeStdin(groupJid);
     }
 
-    if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
-      state.pendingTasks.push({ id: taskId, groupJid, fn });
-      if (!this.waitingGroups.includes(groupJid)) {
-        this.waitingGroups.push(groupJid);
-      }
+    const canStart = this.canStartNonMain();
+
+    if (!canStart) {
+      const task = { id: taskId, groupJid, fn };
+      this.addToWaitingQueue({
+        groupJid,
+        type: 'task',
+        priority: PRIORITY_TASK,
+        task,
+      });
       logger.info(
         {
           groupJid,
           taskId,
           activeCount: this.activeCount,
           maxConcurrent: MAX_CONCURRENT_CONTAINERS,
+          waitingDepth: this.waitingQueue.length,
         },
         'At concurrency limit, task queued (will run when slot available)',
       );
       return;
     }
 
-    // Run immediately — increment synchronously to prevent concurrency overshoot
+    // Run immediately -- increment synchronously to prevent concurrency overshoot
     state.activeTask = true;
     state.runningTaskId = taskId;
     this.activeCount++;
@@ -206,13 +354,20 @@ export class GroupQueue {
 
   /**
    * Mark the message container as idle-waiting (finished work, waiting for IPC input).
-   * If tasks are pending and no task container is running, preempt the idle
-   * message container so the task can start sooner.
+   * If tasks are pending (either per-group or in the global waiting queue) and no
+   * task container is running, preempt the idle message container to free a slot.
    */
   notifyIdle(groupJid: string): void {
     const state = this.getGroup(groupJid);
     state.idleWaiting = true;
-    if (state.pendingTasks.length > 0 && !state.activeTask) {
+
+    const hasLocalPendingTasks =
+      state.pendingTasks.length > 0 && !state.activeTask;
+    const hasGlobalPendingTasks = this.waitingQueue.some(
+      (e) => e.type === 'task' && e.groupJid === groupJid,
+    );
+
+    if (hasLocalPendingTasks || hasGlobalPendingTasks) {
       this.closeStdin(groupJid);
     }
   }
@@ -288,9 +443,11 @@ export class GroupQueue {
    * so this is a no-op for state but could be used for future task lifecycle tracking.
    */
   notifyTaskIdle(_groupJid: string): void {
-    // Task containers are single-turn — no idle waiting state to manage.
+    // Task containers are single-turn -- no idle waiting state to manage.
     // The task scheduler handles closing via closeTaskStdin.
   }
+
+  // ── Internal runners ─────────────────────────────────────────────────
 
   private async runForGroup(
     groupJid: string,
@@ -397,14 +554,22 @@ export class GroupQueue {
     }, delayMs);
   }
 
+  // ── Drain logic ──────────────────────────────────────────────────────
+
+  /**
+   * After a container finishes for a group, try to start any pending work
+   * for that same group first, then check the global waiting queue.
+   */
   private drainGroup(groupJid: string): void {
     if (this.shuttingDown) return;
 
     const state = this.getGroup(groupJid);
+    const isMain = groupJid === this.mainGroupJid;
 
-    // Messages first — user-facing responses take priority over background tasks
+    // Messages first -- user-facing responses take priority over background tasks
     if (state.pendingMessages && !state.activeMessage) {
-      if (this.activeCount < MAX_CONCURRENT_CONTAINERS) {
+      const canStart = isMain ? this.canStartMain() : this.canStartNonMain();
+      if (canStart) {
         state.activeMessage = true;
         state.idleWaiting = false;
         state.pendingMessages = false;
@@ -418,9 +583,10 @@ export class GroupQueue {
       }
     }
 
-    // Then pending tasks (in their own lane)
+    // Then pending tasks (per-group queue, independent of message lane)
     if (state.pendingTasks.length > 0 && !state.activeTask) {
-      if (this.activeCount < MAX_CONCURRENT_CONTAINERS) {
+      const canStart = this.canStartNonMain();
+      if (canStart) {
         const task = state.pendingTasks.shift()!;
         state.activeTask = true;
         state.runningTaskId = task.id;
@@ -452,54 +618,94 @@ export class GroupQueue {
       }
     }
 
-    // Nothing pending for this group; check if other groups are waiting for a slot
-    if (!state.pendingMessages && state.pendingTasks.length === 0) {
-      this.drainWaiting();
-    }
+    // Check if other groups are waiting for a slot
+    this.drainWaiting();
   }
 
+  /**
+   * Drain the global waiting queue in priority order.
+   * Priority 0 (main messages) > 1 (other messages) > 2 (tasks).
+   * Within the same priority, entries are FIFO.
+   */
   private drainWaiting(): void {
-    while (
-      this.waitingGroups.length > 0 &&
-      this.activeCount < MAX_CONCURRENT_CONTAINERS
-    ) {
-      const nextJid = this.waitingGroups.shift()!;
-      const state = this.getGroup(nextJid);
+    if (this.shuttingDown || this.waitingQueue.length === 0) return;
 
-      // Messages first
-      if (state.pendingMessages && !state.activeMessage) {
+    let i = 0;
+    while (i < this.waitingQueue.length) {
+      const entry = this.waitingQueue[i];
+      const state = this.getGroup(entry.groupJid);
+      const isMainMessage =
+        entry.groupJid === this.mainGroupJid && entry.type === 'message';
+      const canStart = isMainMessage
+        ? this.canStartMain()
+        : this.canStartNonMain();
+
+      if (!canStart) {
+        // If even main can't start, nothing can -- stop draining
+        if (isMainMessage) break;
+        i++;
+        continue;
+      }
+
+      // Check if this entry can actually start (no active lane conflict)
+      if (entry.type === 'message') {
+        if (state.activeMessage) {
+          // Already has an active message container -- mark pending instead
+          state.pendingMessages = true;
+          this.waitingQueue.splice(i, 1);
+          continue;
+        }
+
+        // Start message
+        this.waitingQueue.splice(i, 1);
         state.activeMessage = true;
         state.idleWaiting = false;
         state.pendingMessages = false;
         this.activeCount++;
-        this.runForGroup(nextJid, 'drain').catch((err) =>
+        this.runForGroup(entry.groupJid, 'drain').catch((err) =>
           logger.error(
-            { groupJid: nextJid, err },
+            { groupJid: entry.groupJid, err },
             'Unhandled error in runForGroup (waiting)',
           ),
         );
-      }
-
-      if (state.pendingTasks.length > 0 && !state.activeTask) {
-        if (this.activeCount < MAX_CONCURRENT_CONTAINERS) {
-          state.activeTask = true;
-          state.runningTaskId = state.pendingTasks[0].id;
-          this.activeCount++;
-          const task = state.pendingTasks.shift()!;
-          this.runTask(nextJid, task).catch((err) =>
-            logger.error(
-              { groupJid: nextJid, taskId: task.id, err },
-              'Unhandled error in runTask (waiting)',
-            ),
-          );
+      } else {
+        if (state.activeTask) {
+          // Already has an active task container -- move to per-group queue
+          if (entry.task) {
+            state.pendingTasks.push(entry.task);
+          }
+          this.waitingQueue.splice(i, 1);
+          continue;
         }
+
+        // Start task
+        this.waitingQueue.splice(i, 1);
+        state.activeTask = true;
+        state.runningTaskId = entry.task!.id;
+        this.activeCount++;
+        logger.info(
+          {
+            groupJid: entry.groupJid,
+            taskId: entry.task!.id,
+            activeCount: this.activeCount,
+          },
+          'Starting task from waiting queue',
+        );
+        this.runTask(entry.groupJid, entry.task!).catch((err) =>
+          logger.error(
+            { groupJid: entry.groupJid, taskId: entry.task!.id, err },
+            'Unhandled error in runTask (waiting)',
+          ),
+        );
       }
     }
   }
 
+  // ── Status / observability ───────────────────────────────────────────
+
   /**
    * Returns true when the group has an active message container that is not
-   * idle-waiting.  Task containers are invisible to this check — the user
+   * idle-waiting.  Task containers are invisible to this check -- the user
    * should not be told "wait" just because a background task is running.
    */
   isBusy(groupJid: string): boolean {
@@ -553,10 +759,37 @@ export class GroupQueue {
     return result;
   }
 
+  /**
+   * Returns global queue metrics for observability.
+   */
+  getQueueMetrics(): {
+    activeCount: number;
+    maxContainers: number;
+    waitingByPriority: { mainMessages: number; messages: number; tasks: number };
+    reservedSlotAvailable: boolean;
+  } {
+    let mainMessages = 0;
+    let messages = 0;
+    let tasks = 0;
+    for (const entry of this.waitingQueue) {
+      if (entry.priority === PRIORITY_MAIN_MESSAGE) mainMessages++;
+      else if (entry.priority === PRIORITY_MESSAGE) messages++;
+      else tasks++;
+    }
+
+    return {
+      activeCount: this.activeCount,
+      maxContainers: MAX_CONCURRENT_CONTAINERS,
+      waitingByPriority: { mainMessages, messages, tasks },
+      reservedSlotAvailable:
+        this.activeCount < MAX_CONCURRENT_CONTAINERS && !this.mainHasPending(),
+    };
+  }
+
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
+    // Count active containers but don't kill them -- they'll finish on their own
     // via idle timeout or container timeout. The --rm flag cleans them up on exit.
     // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];

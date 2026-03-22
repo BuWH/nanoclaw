@@ -12,7 +12,7 @@ import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 import type { ButtonRows } from './types.js';
 import { handleXIpc } from './x-ipc.js';
-import type { QueueStatusEntry } from './container-runner.js';
+import type { QueueStatusEntry, QueueMetrics } from './container-runner.js';
 
 export interface IpcDeps {
   sendMessage: (
@@ -45,6 +45,7 @@ export interface IpcDeps {
     isMain: boolean,
     entries: QueueStatusEntry[],
     registeredGroups: Record<string, { name: string; folder: string }>,
+    metrics?: QueueMetrics,
   ) => void;
   onTasksChanged: () => void;
 }

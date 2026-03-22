@@ -158,6 +158,7 @@ async function runTask(
     isMain,
     deps.queue.getStatus(),
     groups,
+    deps.queue.getQueueMetrics(),
   );
 
   // Advance next_run BEFORE running, so a restart won't re-trigger this execution.

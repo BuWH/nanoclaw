@@ -68,7 +68,7 @@ export const FIRST_OUTPUT_TIMEOUT = parseInt(
 ); // 5min default — kill container if no output marker received within this time
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
-  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
+  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '7', 10) || 7,
 );
 
 function escapeRegex(str: string): string {
