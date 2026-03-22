@@ -100,6 +100,55 @@ export interface QueueStatusEntry {
   taskContainerName: string | null;
 }
 
+export interface QueueMetrics {
+  activeCount: number;
+  maxContainers: number;
+  waitingByPriority: {
+    mainMessages: number;
+    messages: number;
+    tasks: number;
+  };
+}
+
+export interface ChannelStatusEntry {
+  name: string;
+  connected: boolean;
+}
+
+export interface DoctorData {
+  pid: number;
+  uptimeMs: number;
+  memoryMb: number;
+  nodeVersion: string;
+  docker: { available: boolean; error?: string };
+  containerImage: string;
+  containers: { active: number; max: number };
+  channels: ChannelStatusEntry[];
+  groups: { count: number; mainName: string | null };
+  scheduler: {
+    total: number;
+    active: number;
+    paused: number;
+    byCron: number;
+    byInterval: number;
+    byOnce: number;
+    nextDue: string | null;
+  };
+  git: {
+    branch: string;
+    commitShort: string;
+    commitAge: string;
+    clean: boolean;
+    upToDate: boolean | null;
+  };
+  runStats: {
+    total: number;
+    byStatus: Record<string, number>;
+    deadLetterCount: number;
+  };
+  issues: string[];
+}
+
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
@@ -107,6 +156,15 @@ export interface TelegramChannelOpts {
   onRestart?: () => Promise<void>;
   getScheduledTasks?: () => ScheduledTask[];
   getQueueStatus?: () => QueueStatusEntry[];
+  getUptime?: () => number;
+  getRunStats?: () => {
+    total: number;
+    byStatus: Record<string, number>;
+    deadLetterCount: number;
+  };
+  getQueueMetrics?: () => QueueMetrics;
+  getChannelStatus?: () => ChannelStatusEntry[];
+  getDoctorData?: () => DoctorData;
 }
 
 export class TelegramChannel implements Channel {
@@ -181,40 +239,55 @@ export class TelegramChannel implements Channel {
       }
 
       const groups = this.opts.registeredGroups();
-      const lines = tasks.map((t) => {
-        const statusIcon =
-          t.status === 'active' ? '▶' : t.status === 'paused' ? '⏸' : '✓';
+      const lines = tasks.map((t, i) => {
+        const statusTag =
+          t.status === 'active'
+            ? 'active'
+            : t.status === 'paused'
+              ? 'paused'
+              : 'done';
         const groupName =
           Object.values(groups).find((g) => g.folder === t.group_folder)
             ?.name || t.group_folder;
         const scheduleDesc = formatSchedule(t);
         const promptPreview =
-          t.prompt.length > 40 ? `${t.prompt.slice(0, 40)}...` : t.prompt;
-        const lastRunInfo = t.last_run
-          ? `\n    上次: ${formatTime(t.last_run)}`
-          : '';
-        const nextRunInfo =
-          t.next_run && t.next_run < '9999'
-            ? `\n    下次: ${formatTime(t.next_run)}`
+          t.prompt.length > 60 ? `${t.prompt.slice(0, 60)}...` : t.prompt;
+
+        let line = `${i + 1}. [${statusTag}] ${promptPreview}\n    ${groupName} | ${scheduleDesc}`;
+
+        if (t.status === 'active') {
+          const lastRunInfo = t.last_run
+            ? `Last: ${formatTime(t.last_run)}`
             : '';
-        return `${statusIcon} <b>${promptPreview}</b>\n    ID: <code>${t.id}</code>\n    分组: ${groupName} | ${scheduleDesc}${lastRunInfo}${nextRunInfo}`;
+          const nextRunInfo =
+            t.next_run && t.next_run < '9999'
+              ? `Next: ${formatTime(t.next_run)}`
+              : '';
+          const timeInfo = [lastRunInfo, nextRunInfo]
+            .filter(Boolean)
+            .join('  ');
+          if (timeInfo) {
+            line += `\n    ${timeInfo}`;
+          }
+        }
+
+        return line;
       });
 
-      const header = `<b>定时任务列表</b> (${tasks.length} 个)\n\n`;
+      // Compact ID footer — show short IDs for reference
+      const shortIds = tasks.map((t) => t.id.slice(0, 8));
+      const idFooter = `IDs: ${shortIds.join(' / ')}`;
+
+      const header = `<b>定时任务</b> (${tasks.length})\n\n`;
       const body = lines.join('\n\n');
-      ctx.reply(header + body, { parse_mode: 'HTML' }).catch(() => {
+      const footer = `\n\n<code>${idFooter}</code>`;
+      ctx.reply(header + body + footer, { parse_mode: 'HTML' }).catch(() => {
         // Fallback to plain text if HTML fails
-        const plain = tasks
-          .map(
-            (t) =>
-              `${t.status === 'active' ? '▶' : t.status === 'paused' ? '⏸' : '✓'} ${t.prompt.slice(0, 40)} [${t.schedule_type}:${t.schedule_value}]`,
-          )
-          .join('\n');
-        ctx.reply(`定时任务列表 (${tasks.length} 个)\n\n${plain}`);
+        ctx.reply(`定时任务 (${tasks.length})\n\n${body}\n\n${idFooter}`);
       });
     });
 
-    // Command to show background task execution status
+    // Command to show full system status dashboard
     this.bot.command('status', (ctx) => {
       if (!this.opts.getQueueStatus) {
         ctx.reply('状态查询不可用');
@@ -224,60 +297,215 @@ export class TelegramChannel implements Channel {
       const entries = this.opts.getQueueStatus();
       const groups = this.opts.registeredGroups();
 
-      if (entries.length === 0) {
-        ctx.reply('当前没有正在运行或排队的任务');
+      // Global metrics section
+      const sections: string[] = [];
+
+      // Uptime + Memory line
+      const uptimeMs = this.opts.getUptime?.() ?? 0;
+      const uptimeStr = formatUptime(uptimeMs);
+      const memMb = Math.round(process.memoryUsage.rss() / 1024 / 1024);
+      sections.push(`Uptime: ${uptimeStr} | Memory: ${memMb} MB`);
+
+      // Containers + Queue line
+      const metrics = this.opts.getQueueMetrics?.();
+      if (metrics) {
+        const totalWaiting =
+          metrics.waitingByPriority.mainMessages +
+          metrics.waitingByPriority.messages +
+          metrics.waitingByPriority.tasks;
+        sections.push(
+          `Containers: ${metrics.activeCount}/${metrics.maxContainers} | Queue: ${totalWaiting} waiting`,
+        );
+      }
+
+      // Per-group status section
+      if (entries.length > 0) {
+        const groupLines = entries.map((e) => {
+          const group = groups[e.groupJid];
+          const name = group?.name || e.groupJid;
+
+          const msgStatus = e.activeMessage
+            ? e.idleWaiting
+              ? 'idle-waiting'
+              : 'running'
+            : 'idle';
+          const taskStatus = e.activeTask ? 'running' : 'idle';
+
+          const parts: string[] = [];
+          parts.push(`Msg: ${msgStatus} | Task: ${taskStatus}`);
+
+          if (e.pendingMessages) {
+            parts.push('Pending: msg queued');
+          }
+          if (e.pendingTaskCount > 0) {
+            parts.push(`Pending: ${e.pendingTaskCount} task(s)`);
+          }
+
+          return `<b>${name}</b>\n    ${parts.join('\n    ')}`;
+        });
+
+        sections.push(`-- Active Groups --\n\n${groupLines.join('\n\n')}`);
+      } else {
+        sections.push('-- Active Groups --\n\nNo active work');
+      }
+
+      // Channels section
+      const channelStatus = this.opts.getChannelStatus?.();
+      if (channelStatus && channelStatus.length > 0) {
+        const channelLines = channelStatus
+          .map(
+            (ch) =>
+              `${ch.name}: ${ch.connected ? 'connected' : 'disconnected'}`,
+          )
+          .join('\n');
+        sections.push(`-- Channels --\n${channelLines}`);
+      }
+
+      // Run ledger section
+      const runStats = this.opts.getRunStats?.();
+      if (runStats && runStats.total > 0) {
+        const ok = runStats.byStatus['acked'] || 0;
+        const fail =
+          (runStats.byStatus['failed'] || 0) +
+          (runStats.byStatus['dead_letter'] || 0);
+        const running = runStats.byStatus['running'] || 0;
+        sections.push(
+          `-- Run Ledger --\nTotal: ${runStats.total} | OK: ${ok} | Fail: ${fail} | Running: ${running}`,
+        );
+      }
+
+      const header = '<b>System Status</b>\n\n';
+      const body = sections.join('\n\n');
+      ctx.reply(header + body, { parse_mode: 'HTML' }).catch(() => {
+        ctx.reply(`System Status\n\n${body.replace(/<[^>]+>/g, '')}`);
+      });
+    });
+
+    // Command to run system diagnostics
+    this.bot.command('doctor', async (ctx) => {
+      if (!this.opts.getDoctorData) {
+        ctx.reply('诊断功能不可用');
         return;
       }
 
-      const lines = entries.map((e) => {
-        const group = groups[e.groupJid];
-        const name = group?.name || e.groupJid;
+      await ctx.reply('Running diagnostics...');
 
-        const parts: string[] = [];
-        if (e.activeMessage) {
-          parts.push(
-            e.idleWaiting ? '💬 消息容器 (空闲等待中)' : '💬 消息容器 (运行中)',
-          );
-        }
-        if (e.pendingMessages) {
-          parts.push('📨 有待处理消息');
-        }
-        if (e.activeTask) {
-          parts.push('⚙️ 后台任务 (运行中)');
-        }
-        if (e.pendingTaskCount > 0) {
-          parts.push(`📋 ${e.pendingTaskCount} 个任务排队中`);
-        }
+      let data: DoctorData;
+      try {
+        data = this.opts.getDoctorData();
+      } catch (err) {
+        ctx.reply('诊断过程出错');
+        logger.error({ err }, 'Doctor command failed');
+        return;
+      }
 
-        return `<b>${name}</b>\n    ${parts.join('\n    ')}`;
+      const sections: string[] = [];
+
+      // Process section
+      sections.push(
+        `<b>-- Process --</b>\n` +
+          `PID: ${data.pid} | Uptime: ${formatUptime(data.uptimeMs)}\n` +
+          `Memory: ${data.memoryMb} MB | Node: ${data.nodeVersion}`,
+      );
+
+      // Container runtime section
+      const dockerStatus = data.docker.available
+        ? 'running'
+        : `error: ${data.docker.error || 'unknown'}`;
+      sections.push(
+        `<b>-- Container Runtime --</b>\n` +
+          `Docker: ${dockerStatus}\n` +
+          `Image: ${data.containerImage}\n` +
+          `Active: ${data.containers.active}/${data.containers.max} containers`,
+      );
+
+      // Channels section
+      if (data.channels.length > 0) {
+        const channelLines = data.channels
+          .map(
+            (ch) =>
+              `${ch.name}: ${ch.connected ? 'connected' : 'disconnected'}`,
+          )
+          .join('\n');
+        sections.push(`<b>-- Channels --</b>\n${channelLines}`);
+      }
+
+      // Groups section
+      const mainInfo = data.groups.mainName
+        ? `Main: ${data.groups.mainName}`
+        : 'Main: not set';
+      sections.push(
+        `<b>-- Groups --</b>\n` +
+          `Registered: ${data.groups.count} groups\n` +
+          mainInfo,
+      );
+
+      // Scheduler section
+      const schedParts = [];
+      if (data.scheduler.byCron > 0)
+        schedParts.push(`${data.scheduler.byCron} cron`);
+      if (data.scheduler.byInterval > 0)
+        schedParts.push(`${data.scheduler.byInterval} interval`);
+      if (data.scheduler.byOnce > 0)
+        schedParts.push(`${data.scheduler.byOnce} once`);
+      const schedBreakdown =
+        schedParts.length > 0 ? ` (${schedParts.join(', ')})` : '';
+      const nextDueStr = data.scheduler.nextDue
+        ? `Next due: ${formatTime(data.scheduler.nextDue)}`
+        : 'Next due: none';
+      sections.push(
+        `<b>-- Scheduler --</b>\n` +
+          `Tasks: ${data.scheduler.total} total, ${data.scheduler.active} active, ${data.scheduler.paused} paused${schedBreakdown}\n` +
+          nextDueStr,
+      );
+
+      // Code section
+      const cleanStr = data.git.clean ? 'yes' : 'no';
+      const upToDateStr =
+        data.git.upToDate === null
+          ? 'unknown'
+          : data.git.upToDate
+            ? 'yes'
+            : 'no';
+      sections.push(
+        `<b>-- Code --</b>\n` +
+          `Branch: ${data.git.branch} | Commit: <code>${data.git.commitShort}</code>\n` +
+          `Last commit: ${data.git.commitAge}\n` +
+          `Clean: ${cleanStr} | Up-to-date: ${upToDateStr}`,
+      );
+
+      // Run ledger section
+      if (data.runStats.total > 0) {
+        const ok = data.runStats.byStatus['acked'] || 0;
+        const fail = data.runStats.byStatus['failed'] || 0;
+        const dead = data.runStats.deadLetterCount;
+        sections.push(
+          `<b>-- Run Ledger --</b>\n` +
+            `Total: ${data.runStats.total} | OK: ${ok} | Fail: ${fail} | Dead: ${dead}`,
+        );
+      }
+
+      // Issues section
+      if (data.issues.length > 0) {
+        const issueLines = data.issues.map((issue) => `! ${issue}`).join('\n');
+        sections.push(`<b>-- Issues --</b>\n${issueLines}`);
+      } else {
+        sections.push(`<b>-- Issues --</b>\nAll systems healthy`);
+      }
+
+      const header = '<b>System Diagnostic</b>\n\n';
+      const body = sections.join('\n\n');
+      ctx.reply(header + body, { parse_mode: 'HTML' }).catch(() => {
+        ctx.reply(`System Diagnostic\n\n${body.replace(/<[^>]+>/g, '')}`);
       });
-
-      const header = `<b>执行状态</b>\n\n`;
-      ctx
-        .reply(header + lines.join('\n\n'), { parse_mode: 'HTML' })
-        .catch(() => {
-          const plain = entries
-            .map((e) => {
-              const group = groups[e.groupJid];
-              const name = group?.name || e.groupJid;
-              const status: string[] = [];
-              if (e.activeMessage)
-                status.push(e.idleWaiting ? '消息(空闲)' : '消息(运行)');
-              if (e.activeTask) status.push('任务(运行)');
-              if (e.pendingTaskCount > 0)
-                status.push(`${e.pendingTaskCount}排队`);
-              return `${name}: ${status.join(', ')}`;
-            })
-            .join('\n');
-          ctx.reply(`执行状态\n\n${plain}`);
-        });
     });
 
     // Set bot menu commands so they appear in Telegram's UI
     this.bot.api
       .setMyCommands([
         { command: 'tasks', description: '查看定时任务列表' },
-        { command: 'status', description: '查看后台任务执行状态' },
+        { command: 'status', description: '系统状态仪表盘' },
+        { command: 'doctor', description: '系统健康诊断' },
         { command: 'ping', description: '检查机器人是否在线' },
         { command: 'restart', description: '重启服务器' },
         { command: 'chatid', description: '获取当前聊天的注册 ID' },
@@ -868,6 +1096,18 @@ function formatTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+/** Format milliseconds into a human-readable uptime string. */
+function formatUptime(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 // Bot pool for agent teams: send-only Api instances (no polling)
