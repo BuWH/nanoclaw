@@ -67,9 +67,18 @@ export function acquireGitLock(operation: string): boolean {
 
 export function releaseGitLock(): void {
   try {
+    const content = fs.readFileSync(GIT_LOCK_FILE, 'utf-8');
+    const lockInfo: LockInfo = JSON.parse(content);
+    if (lockInfo.pid !== process.pid) {
+      logger.warn(
+        { lockPid: lockInfo.pid, myPid: process.pid },
+        'Not releasing git lock owned by another process',
+      );
+      return;
+    }
     fs.unlinkSync(GIT_LOCK_FILE);
   } catch {
-    /* already released */
+    // Lock already released or corrupted — safe to ignore
   }
 }
 

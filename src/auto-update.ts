@@ -195,13 +195,11 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
     if (checking) return;
     checking = true;
     try {
-      // Phase 1: Fetch latest remote state (read-only, safe to do before quiesce).
-      await withGitLock('auto-update:fetch', () => {
-        execSync('git fetch origin main', {
-          cwd: projectRoot,
-          stdio: 'ignore',
-          timeout: FETCH_TIMEOUT,
-        });
+      // Phase 1: Fetch latest remote state (read-only, no lock needed).
+      execSync('git fetch origin main', {
+        cwd: projectRoot,
+        stdio: 'ignore',
+        timeout: FETCH_TIMEOUT,
       });
 
       // Phase 2: Quick check — do we even need to update? Read HEAD and
@@ -214,7 +212,6 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       // Fast path: if HEAD already matches origin/main, nothing to do.
       // This avoids quiescing the queue on every 60s cycle.
       if (currentHead === remote) {
-        maintainWorktrees();
         return;
       }
 
@@ -225,7 +222,6 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
       // If we're on main and local already contains remote, no update needed.
       if (onMain && !hasRemoteUpdates(projectRoot, currentHead, remote)) {
-        maintainWorktrees();
         return;
       }
 
@@ -406,7 +402,6 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       }
 
       logger.info('Auto-update rebuild complete, restarting');
-      maintainWorktrees();
       process.exit(0);
     } catch (err) {
       // If we quiesced but failed to update, re-open the queue so normal
@@ -414,6 +409,7 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       if (queue) queue.unquiesce();
       logger.error({ err }, 'Auto-update check failed');
     } finally {
+      maintainWorktrees();
       checking = false;
     }
   };

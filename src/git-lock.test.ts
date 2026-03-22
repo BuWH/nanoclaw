@@ -116,6 +116,27 @@ describe('releaseGitLock', () => {
   it('does not throw when no lock file exists', () => {
     expect(() => releaseGitLock()).not.toThrow();
   });
+
+  it('does not delete lock owned by a different PID', () => {
+    fs.mkdirSync(LOCK_DIR, { recursive: true });
+    const foreignLock = {
+      pid: process.pid + 9999,
+      timestamp: Date.now(),
+      operation: 'foreign-op',
+    };
+    fs.writeFileSync(LOCK_FILE, JSON.stringify(foreignLock));
+
+    releaseGitLock();
+
+    // Lock file must still exist — owned by another process
+    expect(fs.existsSync(LOCK_FILE)).toBe(true);
+    const content = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+    expect(content.pid).toBe(foreignLock.pid);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ lockPid: foreignLock.pid, myPid: process.pid }),
+      'Not releasing git lock owned by another process',
+    );
+  });
 });
 
 describe('withGitLock', () => {
