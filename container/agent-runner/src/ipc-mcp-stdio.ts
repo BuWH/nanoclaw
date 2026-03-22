@@ -749,8 +749,8 @@ After receiving the results:
       timestamp: new Date().toISOString(),
     });
 
-    // Codex reviews take significantly longer than X operations
-    const result = await waitForCodexResult(requestId, 300000);
+    // Host-side: clone (60s) + checkout (60s) + review (300s) = 420s max
+    const result = await waitForCodexResult(requestId, 420000);
     return {
       content: [{ type: 'text' as const, text: result.message }],
       isError: !result.success,

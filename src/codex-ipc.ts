@@ -14,6 +14,7 @@
 
 import { spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { logger } from './logger.js';
@@ -53,8 +54,8 @@ function parsePrUrl(prUrl: string): {
     };
   }
 
-  // Shorthand: owner/repo#123
-  const shortMatch = prUrl.match(/^([^/]+)\/([^#]+)#(\d+)$/);
+  // Shorthand: owner/repo#123 (disallow / in repo to prevent path traversal)
+  const shortMatch = prUrl.match(/^([^/]+)\/([^/#]+)#(\d+)$/);
   if (shortMatch) {
     return {
       owner: shortMatch[1],
@@ -129,12 +130,8 @@ async function prepareRepo(
   repo: string,
   prNumber: number,
 ): Promise<{ repoDir: string } | { error: string }> {
-  const repoDir = `/tmp/codex-review-${owner}-${repo}-${Date.now()}`;
-
-  // Remove stale clone if it somehow exists
-  if (fs.existsSync(repoDir)) {
-    fs.rmSync(repoDir, { recursive: true, force: true });
-  }
+  // Use mkdtemp for safe temp dir creation (no user input in path)
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-review-'));
 
   logger.info({ owner, repo, repoDir }, 'Cloning repository for Codex review');
   const clone = await execCommand(
@@ -143,6 +140,7 @@ async function prepareRepo(
     { timeout: CLONE_TIMEOUT_MS },
   );
   if (clone.code !== 0) {
+    fs.rmSync(repoDir, { recursive: true, force: true });
     return { error: `Failed to clone ${owner}/${repo}: ${clone.stderr}` };
   }
 
