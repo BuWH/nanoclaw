@@ -86,7 +86,13 @@ import { startSchedulerLoop, triggerSchedulerDrain } from './task-scheduler.js';
 import { ButtonRows, Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { startXHealthCheck } from './x-health.js';
-import { startAutoUpdateLoop, UPDATE_CHANGELOG_PATH } from './auto-update.js';
+import {
+  startAutoUpdateLoop,
+  UPDATE_CHANGELOG_PATH,
+  PRE_UPDATE_HEAD_PATH,
+  LAST_ANNOUNCED_HEAD_PATH,
+  computeChangelog,
+} from './auto-update.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -1294,32 +1300,93 @@ async function main(): Promise<void> {
     const mainChannel = findChannel(channels, mainJid);
     if (mainChannel) {
       let msg = '服务已重启 ✅';
+      let changelog = '';
+
       try {
-        if (fs.existsSync(UPDATE_CHANGELOG_PATH)) {
-          const changelog = fs
-            .readFileSync(UPDATE_CHANGELOG_PATH, 'utf-8')
+        // Strategy A (primary): Compute changelog from pre-update HEAD marker.
+        // The marker is written BEFORE pull, so it survives SIGTERM/crashes.
+        if (fs.existsSync(PRE_UPDATE_HEAD_PATH)) {
+          const savedSha = fs
+            .readFileSync(PRE_UPDATE_HEAD_PATH, 'utf-8')
             .trim();
+          const currentHead = execSync('git rev-parse HEAD', {
+            cwd: process.cwd(),
+            encoding: 'utf-8',
+            stdio: 'pipe',
+          }).trim();
+
+          logger.info(
+            { savedSha, currentHead, markerPath: PRE_UPDATE_HEAD_PATH },
+            'Found pre-update HEAD marker',
+          );
+
+          // Dedup guard: don't re-announce the same update after a manual restart.
+          let lastAnnounced = '';
+          try {
+            lastAnnounced = fs
+              .readFileSync(LAST_ANNOUNCED_HEAD_PATH, 'utf-8')
+              .trim();
+          } catch {
+            /* file doesn't exist yet */
+          }
+
+          if (savedSha !== currentHead && currentHead !== lastAnnounced) {
+            changelog = computeChangelog(savedSha, currentHead, process.cwd());
+          } else {
+            logger.info(
+              { savedSha, currentHead, lastAnnounced },
+              'Skipping changelog: no change or already announced',
+            );
+          }
+
+          // Clean up marker
+          try {
+            fs.unlinkSync(PRE_UPDATE_HEAD_PATH);
+          } catch {
+            /* ignore */
+          }
+
+          // Record what we announced
+          if (changelog) {
+            try {
+              fs.mkdirSync(path.dirname(LAST_ANNOUNCED_HEAD_PATH), {
+                recursive: true,
+              });
+              fs.writeFileSync(LAST_ANNOUNCED_HEAD_PATH, currentHead, 'utf-8');
+            } catch {
+              /* non-fatal */
+            }
+          }
+        }
+
+        // Strategy B (legacy fallback): Read pre-written changelog file.
+        // Handles the case where an old version wrote the changelog before restart.
+        if (!changelog && fs.existsSync(UPDATE_CHANGELOG_PATH)) {
+          changelog = fs.readFileSync(UPDATE_CHANGELOG_PATH, 'utf-8').trim();
           logger.info(
             {
               changelogPath: UPDATE_CHANGELOG_PATH,
               changelogLength: changelog.length,
-              preview: changelog.slice(0, 200),
             },
-            'Read update changelog from disk',
+            'Read legacy changelog from disk',
           );
-          if (changelog) {
-            msg += '\n\n*更新内容:*\n' + changelog;
+          try {
+            fs.unlinkSync(UPDATE_CHANGELOG_PATH);
+          } catch {
+            /* ignore */
           }
-          fs.unlinkSync(UPDATE_CHANGELOG_PATH);
-        } else {
-          logger.debug(
-            { changelogPath: UPDATE_CHANGELOG_PATH },
-            'No changelog file found at startup',
-          );
+        }
+
+        if (changelog) {
+          msg += '\n\n*更新内容:*\n' + changelog;
         }
       } catch (changelogErr) {
-        logger.warn({ err: changelogErr }, 'Failed to read update changelog');
+        logger.warn(
+          { err: changelogErr },
+          'Failed to compute update changelog',
+        );
       }
+
       mainChannel.sendMessage(mainJid, msg).catch((err) => {
         logger.warn({ err }, 'Failed to send startup notification');
       });

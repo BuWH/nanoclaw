@@ -37,6 +37,15 @@ export const UPDATE_CHANGELOG_PATH = path.join(
 /** File that records the last known-good commit SHA for rollback. */
 export const UPDATE_KNOWN_GOOD_PATH = path.join(DATA_DIR, '.known-good-commit');
 
+/** Marker written BEFORE pull so the next boot can compute the changelog. */
+export const PRE_UPDATE_HEAD_PATH = path.join(DATA_DIR, '.pre-update-head');
+
+/** Tracks the last HEAD SHA that was announced, preventing duplicate changelogs. */
+export const LAST_ANNOUNCED_HEAD_PATH = path.join(
+  DATA_DIR,
+  '.last-announced-head',
+);
+
 interface QueueHandle {
   getActiveCount(): number;
   quiesce(): Promise<void>;
@@ -61,6 +70,72 @@ function git(args: string, cwd: string, timeout?: number): string {
     stdio: 'pipe',
     timeout,
   }).trim();
+}
+
+/**
+ * Compute a human-readable changelog between two SHAs.
+ *
+ * Uses three strategies in order:
+ * 1. Merge commit subjects (PR titles from GitHub merge flow)
+ * 2. Merge commit bodies (PR descriptions)
+ * 3. Non-merge commit subjects (squash-merge flow)
+ *
+ * Returns empty string if no meaningful subjects found or on error.
+ */
+export function computeChangelog(
+  fromSha: string,
+  toSha: string,
+  cwd: string,
+): string {
+  try {
+    const range = `${fromSha}..${toSha}`;
+    logger.info({ fromSha, toSha, range }, 'Computing changelog for range');
+
+    // Strategy 1: merge commit subjects with "Merge pull request" prefix
+    // stripped -- gives the PR title, the most user-friendly summary.
+    let subjects = git(`log --format=%s --first-parent ${range}`, cwd)
+      .split('\n')
+      .map((s) => s.replace(/^Merge pull request #\d+ from \S+\s*/i, '').trim())
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+
+    // Strategy 2: extract PR description from merge commit body.
+    if (!subjects) {
+      const body = git(`log --format=%b --first-parent ${range}`, cwd);
+      if (body) {
+        subjects = body
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((s) => !/^Merge (pull request|branch) /i.test(s))
+          .join('\n')
+          .trim();
+      }
+    }
+
+    // Strategy 3: non-merge commits (squash-merge flow).
+    if (!subjects) {
+      subjects = git(`log --format=%s --no-merges ${range}`, cwd);
+    }
+
+    logger.info(
+      { range, subjectCount: subjects ? subjects.split('\n').length : 0 },
+      'Changelog subjects collected',
+    );
+
+    if (!subjects) return '';
+
+    return subjects
+      .split('\n')
+      .map((s) => s.replace(/^[a-z]+(\([^)]*\))?:\s*/i, '').trim())
+      .filter(Boolean)
+      .map((s) => `• ${s.charAt(0).toUpperCase()}${s.slice(1)}`)
+      .join('\n');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to compute changelog text');
+    return '';
+  }
 }
 
 /**
@@ -145,7 +220,9 @@ function hasRemoteUpdates(
   const result = spawnSync(
     'git',
     ['merge-base', '--is-ancestor', remoteSha, localSha],
-    { cwd },
+    {
+      cwd,
+    },
   );
 
   // exit 0 = remote is ancestor of local -> no update needed
@@ -297,6 +374,23 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         // pre-pull state on the main branch (not a feature branch SHA).
         const prePullSha = localSha;
 
+        // Write pre-update marker BEFORE pull. This is the crash-safe anchor:
+        // if the process is killed at any point after this (SIGTERM, build
+        // failure, etc.), the next boot can compute the changelog as
+        // prePullSha..HEAD.
+        try {
+          fs.writeFileSync(PRE_UPDATE_HEAD_PATH, prePullSha, 'utf-8');
+          logger.info(
+            { prePullSha, path: PRE_UPDATE_HEAD_PATH },
+            'Pre-update HEAD marker written',
+          );
+        } catch (markerErr) {
+          logger.warn(
+            { err: markerErr },
+            'Failed to write pre-update HEAD marker (non-fatal)',
+          );
+        }
+
         // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
         // fails (e.g. local diverged from remote due to leftover commits),
         // fall back to reset --hard. The main checkout is a production
@@ -333,84 +427,38 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
           { prePullSha: pullResult.prePullSha },
           'Branch recovered to main but no new commits — skipping rebuild',
         );
+        // Clean up the pre-update marker since there's nothing to announce.
+        try {
+          fs.unlinkSync(PRE_UPDATE_HEAD_PATH);
+        } catch {
+          /* ignore */
+        }
         if (queue) queue.unquiesce();
         return;
       }
 
-      // Use prePullSha (on main, before pull) as changelog base.
-      const changelogBase = pullResult.prePullSha;
-
-      // Collect a human-readable summary of what changed.  Strip commit
-      // hashes and conventional commit prefixes (fix:, feat:, etc.).
-      // Written to disk only after a successful build (see below).
-      let changelogText = '';
+      // Secondary guard: if HEAD matches the last announced SHA, another
+      // process cycle already handled this update. Skip to avoid infinite
+      // restart loops where the same SHA keeps triggering rebuilds.
       try {
-        const range = `${changelogBase}..${newHead}`;
-
-        logger.info(
-          { changelogBase, newHead, range },
-          'Computing changelog for range',
-        );
-
-        // Strategy 1: merge commit subjects with "Merge pull request" prefix
-        // stripped — gives the PR title, which is the most user-friendly summary.
-        // Works for the default GitHub "Create a merge commit" flow.
-        let subjects = git(
-          `log --format=%s --first-parent ${range}`,
-          projectRoot,
-        )
-          .split('\n')
-          .map((s) =>
-            s.replace(/^Merge pull request #\d+ from \S+\s*/i, '').trim(),
-          )
-          .filter(Boolean)
-          .join('\n')
+        const lastAnnounced = fs
+          .readFileSync(LAST_ANNOUNCED_HEAD_PATH, 'utf-8')
           .trim();
-
-        // Strategy 2: extract PR description from merge commit body.
-        // Useful when strategy 1 yields nothing (e.g. trivial merge where
-        // the subject is just "Merge pull request #N from ...").
-        if (!subjects) {
-          const body = git(
-            `log --format=%b --first-parent ${range}`,
-            projectRoot,
+        if (newHead === lastAnnounced) {
+          logger.info(
+            { newHead, lastAnnounced },
+            'HEAD matches last announced SHA — skipping rebuild to prevent restart loop',
           );
-          if (body) {
-            subjects = body
-              .split('\n')
-              .map((s) => s.trim())
-              .filter(Boolean)
-              .filter((s) => !/^Merge (pull request|branch) /i.test(s))
-              .join('\n')
-              .trim();
+          try {
+            fs.unlinkSync(PRE_UPDATE_HEAD_PATH);
+          } catch {
+            /* ignore */
           }
+          if (queue) queue.unquiesce();
+          return;
         }
-
-        // Strategy 3: non-merge commits in the range (squash-merge flow,
-        // or when strategies 1-2 produce nothing).
-        if (!subjects) {
-          subjects = git(`log --format=%s --no-merges ${range}`, projectRoot);
-        }
-
-        logger.info(
-          {
-            range,
-            subjectCount: subjects ? subjects.split('\n').length : 0,
-            strategy1Raw: subjects || '(empty)',
-          },
-          'Changelog subjects collected',
-        );
-
-        if (subjects) {
-          changelogText = subjects
-            .split('\n')
-            .map((s) => s.replace(/^[a-z]+(\([^)]*\))?:\s*/i, '').trim())
-            .filter(Boolean)
-            .map((s) => `• ${s.charAt(0).toUpperCase()}${s.slice(1)}`)
-            .join('\n');
-        }
-      } catch (changelogErr) {
-        logger.warn({ err: changelogErr }, 'Failed to build changelog text');
+      } catch {
+        // File doesn't exist — first update, proceed normally
       }
 
       try {
@@ -462,32 +510,10 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         }
       }
 
-      // Persist changelog only after a successful build so a failed
-      // update doesn't leave a stale file that misleads the next restart.
-      if (changelogText) {
-        try {
-          fs.mkdirSync(path.dirname(UPDATE_CHANGELOG_PATH), {
-            recursive: true,
-          });
-          fs.writeFileSync(UPDATE_CHANGELOG_PATH, changelogText, 'utf-8');
-          logger.info(
-            {
-              path: UPDATE_CHANGELOG_PATH,
-              length: changelogText.length,
-              preview: changelogText.slice(0, 200),
-            },
-            'Changelog written to disk',
-          );
-        } catch (writeErr) {
-          logger.warn({ err: writeErr }, 'Failed to write update changelog');
-        }
-      } else {
-        logger.warn(
-          'No changelog text generated — restart message will be bare',
-        );
-      }
-
-      logger.info('Auto-update rebuild complete, restarting');
+      logger.info(
+        { newHead, prePullSha: pullResult.prePullSha },
+        'Auto-update rebuild complete, restarting',
+      );
       process.exit(0);
     } catch (err) {
       // If we quiesced but failed to update, re-open the queue so normal
