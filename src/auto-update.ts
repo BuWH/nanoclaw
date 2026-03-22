@@ -400,6 +400,13 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
           const knownGood = fs
             .readFileSync(UPDATE_KNOWN_GOOD_PATH, 'utf-8')
             .trim();
+          if (!/^[0-9a-f]{40}$/i.test(knownGood)) {
+            logger.error(
+              { knownGood },
+              'Invalid known-good SHA, skipping rollback',
+            );
+            process.exit(1);
+          }
           execSync(`git reset --hard ${knownGood}`, {
             cwd: projectRoot,
             stdio: 'pipe',

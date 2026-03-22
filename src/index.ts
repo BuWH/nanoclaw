@@ -767,24 +767,34 @@ async function main(): Promise<void> {
     try {
       if (fs.existsSync(KNOWN_GOOD_PATH)) {
         const knownGood = fs.readFileSync(KNOWN_GOOD_PATH, 'utf-8').trim();
-        const currentHead = execSync('git rev-parse HEAD', {
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        }).trim();
-        if (knownGood && knownGood !== currentHead) {
-          execSync(`git reset --hard ${knownGood}`, { stdio: 'pipe' });
-          const nodeBinDir = path.dirname(process.execPath);
-          execSync('npm run build', {
-            stdio: 'pipe',
-            timeout: 120000,
-            env: { ...process.env, PATH: `${nodeBinDir}:${process.env.PATH}` },
-          });
-          fs.writeFileSync(BOOT_ATTEMPTS_PATH, '0');
-          logger.info(
-            { rolledBackTo: knownGood },
-            'Boot rollback successful, restarting',
+        if (!/^[0-9a-f]{40}$/i.test(knownGood)) {
+          logger.error(
+            { knownGood },
+            'Invalid known-good SHA in boot guard, skipping rollback',
           );
-          process.exit(0);
+        } else {
+          const currentHead = execSync('git rev-parse HEAD', {
+            encoding: 'utf-8',
+            stdio: 'pipe',
+          }).trim();
+          if (knownGood !== currentHead) {
+            execSync(`git reset --hard ${knownGood}`, { stdio: 'pipe' });
+            const nodeBinDir = path.dirname(process.execPath);
+            execSync('npm run build', {
+              stdio: 'pipe',
+              timeout: 120000,
+              env: {
+                ...process.env,
+                PATH: `${nodeBinDir}:${process.env.PATH}`,
+              },
+            });
+            fs.writeFileSync(BOOT_ATTEMPTS_PATH, '0');
+            logger.info(
+              { rolledBackTo: knownGood },
+              'Boot rollback successful, restarting',
+            );
+            process.exit(0);
+          }
         }
       }
     } catch (rollbackErr) {
