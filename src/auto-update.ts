@@ -85,7 +85,7 @@ function ensureOnMain(cwd: string): boolean {
       { fileCount: dirty.split('\n').length },
       'Stashing dirty working tree before branch recovery',
     );
-    execSync('git stash', { cwd, stdio: 'pipe' });
+    execSync('git stash -u', { cwd, stdio: 'pipe' });
   }
 
   try {
@@ -116,7 +116,7 @@ function stashIfDirty(cwd: string): void {
     { fileCount: dirty.split('\n').length },
     'Stashing dirty working tree before auto-update pull',
   );
-  execSync('git stash', { cwd, stdio: 'pipe' });
+  execSync('git stash -u', { cwd, stdio: 'pipe' });
 }
 
 /**
@@ -166,35 +166,47 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
     if (checking) return;
     checking = true;
     try {
-      // Phase 1: Ensure we're on main. If an agent left us on a feature
-      // branch, recover automatically instead of looping forever.
-      if (!ensureOnMain(projectRoot)) return;
-
-      // Phase 2: Stash any dirty state left by agents.
-      stashIfDirty(projectRoot);
-
-      // Phase 3: Fetch latest remote state.
+      // Phase 1: Fetch latest remote state (read-only, safe to do before quiesce).
       execSync('git fetch origin main', {
         cwd: projectRoot,
         stdio: 'ignore',
         timeout: FETCH_TIMEOUT,
       });
 
-      const local = git('rev-parse HEAD', projectRoot);
+      // Phase 2: Quick check — do we even need to update? Read HEAD and
+      // origin/main to decide. If we're on the wrong branch, HEAD won't
+      // match origin/main and hasRemoteUpdates will likely return true,
+      // which is fine — we'll fix the branch after quiescing.
+      const currentHead = git('rev-parse HEAD', projectRoot);
       const remote = git('rev-parse origin/main', projectRoot);
 
-      // Phase 4: Check if remote actually has new commits for us.
-      // This replaces the naive `local !== remote` which broke when local
-      // was ahead (feature branch commits) or diverged.
-      if (!hasRemoteUpdates(projectRoot, local, remote)) return;
+      // Fast path: if HEAD already matches origin/main, nothing to do.
+      // This avoids quiescing the queue on every 60s cycle.
+      if (currentHead === remote) return;
+
+      // We may need to update (or self-heal the branch). Use the more
+      // expensive ancestor check after we know the SHAs differ.
+      const branch = git('rev-parse --abbrev-ref HEAD', projectRoot);
+      const onMain = branch === 'main';
+
+      // If we're on main and local already contains remote, no update needed.
+      if (onMain && !hasRemoteUpdates(projectRoot, currentHead, remote)) return;
 
       logger.info(
-        { localCommit: local.slice(0, 8), remoteCommit: remote.slice(0, 8) },
-        'New commits on main detected, pulling and rebuilding',
+        {
+          localCommit: currentHead.slice(0, 8),
+          remoteCommit: remote.slice(0, 8),
+          branch,
+        },
+        onMain
+          ? 'New commits on main detected, pulling and rebuilding'
+          : 'Wrong branch detected, will self-heal after quiescing',
       );
 
-      // Phase 5: Quiesce the queue — stop accepting new work and wait for
-      // all running containers to drain before pulling / building / restarting.
+      // Phase 3: Quiesce the queue — stop accepting new work and wait for
+      // all running containers to drain. This must happen BEFORE we mutate
+      // the working tree (checkout, stash, pull) because containers may
+      // mount the project directory read-only.
       if (queue) {
         const active = queue.getActiveCount();
         if (active > 0) {
@@ -224,7 +236,16 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
         }
       }
 
-      // Phase 6: Pull. Try --ff-only first (clean fast-forward). If that
+      // Phase 4: Now that the queue is quiesced and no containers are
+      // reading the working tree, safely recover the branch and clean
+      // dirty state.
+      if (!ensureOnMain(projectRoot)) return;
+      stashIfDirty(projectRoot);
+
+      // Re-read HEAD after potential branch switch — it may have changed.
+      const local = git('rev-parse HEAD', projectRoot);
+
+      // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
       // fails (e.g. local diverged from remote due to leftover commits),
       // fall back to reset --hard. The main checkout is a production
       // environment — local-only commits here are never intentional.
