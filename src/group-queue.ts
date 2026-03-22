@@ -782,6 +782,7 @@ export class GroupQueue {
       tasks: number;
     };
     reservedSlotAvailable: boolean;
+    totalGroupsWithActivity: number;
   } {
     let mainMessages = 0;
     let messages = 0;
@@ -792,12 +793,25 @@ export class GroupQueue {
       else tasks++;
     }
 
+    let totalGroupsWithActivity = 0;
+    for (const state of this.groups.values()) {
+      if (
+        state.activeMessage ||
+        state.activeTask ||
+        state.pendingMessages ||
+        state.pendingTasks.length > 0
+      ) {
+        totalGroupsWithActivity++;
+      }
+    }
+
     return {
       activeCount: this.activeCount,
       maxContainers: MAX_CONCURRENT_CONTAINERS,
       waitingByPriority: { mainMessages, messages, tasks },
       reservedSlotAvailable:
         this.activeCount < MAX_CONCURRENT_CONTAINERS && !this.mainHasPending(),
+      totalGroupsWithActivity,
     };
   }
 

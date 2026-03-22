@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { withGitLock } from './git-lock.js';
 import { logger } from './logger.js';
 
 const AUTO_UPDATE_INTERVAL = 60_000; // 60 seconds
@@ -162,11 +163,39 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
   let checking = false;
 
+  /** Prune stale worktrees and warn if count is high. */
+  const maintainWorktrees = () => {
+    try {
+      execSync('git worktree prune', {
+        cwd: projectRoot,
+        stdio: 'pipe',
+        timeout: 10000,
+      });
+      const worktreeList = execSync('git worktree list --porcelain', {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 10000,
+      });
+      const worktreeCount = worktreeList
+        .split('\n')
+        .filter((l) => l.startsWith('worktree ')).length;
+      if (worktreeCount > 8) {
+        logger.warn(
+          { worktreeCount },
+          'High worktree count — consider cleaning up stale worktrees',
+        );
+      }
+    } catch (err) {
+      logger.debug({ err }, 'Worktree maintenance failed (non-fatal)');
+    }
+  };
+
   const check = async () => {
     if (checking) return;
     checking = true;
     try {
-      // Phase 1: Fetch latest remote state (read-only, safe to do before quiesce).
+      // Phase 1: Fetch latest remote state (read-only, no lock needed).
       execSync('git fetch origin main', {
         cwd: projectRoot,
         stdio: 'ignore',
@@ -182,7 +211,9 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
       // Fast path: if HEAD already matches origin/main, nothing to do.
       // This avoids quiescing the queue on every 60s cycle.
-      if (currentHead === remote) return;
+      if (currentHead === remote) {
+        return;
+      }
 
       // We may need to update (or self-heal the branch). Use the more
       // expensive ancestor check after we know the SHAs differ.
@@ -190,7 +221,9 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       const onMain = branch === 'main';
 
       // If we're on main and local already contains remote, no update needed.
-      if (onMain && !hasRemoteUpdates(projectRoot, currentHead, remote)) return;
+      if (onMain && !hasRemoteUpdates(projectRoot, currentHead, remote)) {
+        return;
+      }
 
       logger.info(
         {
@@ -238,35 +271,42 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
 
       // Phase 4: Now that the queue is quiesced and no containers are
       // reading the working tree, safely recover the branch and clean
-      // dirty state.
-      if (!ensureOnMain(projectRoot)) return;
-      stashIfDirty(projectRoot);
+      // dirty state. Wrapped in git lock to prevent concurrent git ops.
+      const pullResult = await withGitLock('auto-update:pull', () => {
+        if (!ensureOnMain(projectRoot)) return { ok: false as const };
+        stashIfDirty(projectRoot);
 
-      // Re-read HEAD after potential branch switch — it may have changed.
-      const local = git('rev-parse HEAD', projectRoot);
+        // Re-read HEAD after potential branch switch -- it may have changed.
+        const localSha = git('rev-parse HEAD', projectRoot);
 
-      // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
-      // fails (e.g. local diverged from remote due to leftover commits),
-      // fall back to reset --hard. The main checkout is a production
-      // environment — local-only commits here are never intentional.
-      try {
-        execSync('git pull --ff-only origin main', {
-          cwd: projectRoot,
-          stdio: 'pipe',
-          timeout: PULL_TIMEOUT,
-          env: execEnv,
-        });
-      } catch (pullErr) {
-        logger.warn(
-          { err: pullErr },
-          'Fast-forward pull failed — falling back to hard reset',
-        );
-        execSync('git reset --hard origin/main', {
-          cwd: projectRoot,
-          stdio: 'pipe',
-          timeout: PULL_TIMEOUT,
-        });
-      }
+        // Phase 5: Pull. Try --ff-only first (clean fast-forward). If that
+        // fails (e.g. local diverged from remote due to leftover commits),
+        // fall back to reset --hard. The main checkout is a production
+        // environment -- local-only commits here are never intentional.
+        try {
+          execSync('git pull --ff-only origin main', {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: PULL_TIMEOUT,
+            env: execEnv,
+          });
+        } catch (pullErr) {
+          logger.warn(
+            { err: pullErr },
+            'Fast-forward pull failed — falling back to hard reset',
+          );
+          execSync('git reset --hard origin/main', {
+            cwd: projectRoot,
+            stdio: 'pipe',
+            timeout: PULL_TIMEOUT,
+          });
+        }
+
+        return { ok: true as const, localSha };
+      });
+
+      if (!pullResult.ok) return;
+      const local = pullResult.localSha;
 
       // Collect a human-readable summary of what changed.  Strip commit
       // hashes and conventional commit prefixes (fix:, feat:, etc.).
@@ -369,6 +409,7 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
       if (queue) queue.unquiesce();
       logger.error({ err }, 'Auto-update check failed');
     } finally {
+      maintainWorktrees();
       checking = false;
     }
   };
