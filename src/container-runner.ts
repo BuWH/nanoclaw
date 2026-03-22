@@ -347,9 +347,6 @@ function buildContainerArgs(
   return args;
 }
 
-// Session size warning threshold (500KB of transcript = very long session)
-const SESSION_SIZE_WARNING_BYTES = 500 * 1024;
-
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -360,54 +357,6 @@ export async function runContainerAgent(
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
-
-  // Check session transcript size and warn if it's getting large
-  if (input.sessionId && onOutput) {
-    const sessionProjectsDir = path.join(
-      DATA_DIR,
-      'sessions',
-      group.folder,
-      '.claude',
-      'projects',
-    );
-    try {
-      if (fs.existsSync(sessionProjectsDir)) {
-        let totalSize = 0;
-        const walkDir = (dir: string) => {
-          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            const fullPath = path.join(dir, entry.name);
-            if (entry.isDirectory()) {
-              walkDir(fullPath);
-            } else if (entry.name.endsWith('.jsonl')) {
-              totalSize += fs.statSync(fullPath).size;
-            }
-          }
-        };
-        walkDir(sessionProjectsDir);
-
-        if (totalSize > SESSION_SIZE_WARNING_BYTES) {
-          const sizeMB = (totalSize / 1024 / 1024).toFixed(1);
-          logger.warn(
-            { group: group.name, sessionSize: totalSize, sizeMB },
-            'Large session detected — may cause slow responses',
-          );
-          // Send warning to the chat — marked as isWarning so consumers
-          // don't treat it as a real agent result (no cursor advance, no task close).
-          await onOutput({
-            status: 'success',
-            result: `⚠️ Session 较长（${sizeMB}MB），可能导致响应变慢或超时。如需清理 session 请回复「清理 session」。`,
-            newSessionId: input.sessionId,
-            isWarning: true,
-          });
-        }
-      }
-    } catch (err) {
-      logger.debug(
-        { group: group.name, err },
-        'Failed to check session size (non-fatal)',
-      );
-    }
-  }
 
   const mounts = buildVolumeMounts(group, input.isMain, input.isScheduledTask);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');

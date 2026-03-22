@@ -37,6 +37,7 @@ import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
+  deleteSession,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
@@ -52,6 +53,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { shouldRotateSession, rotateSession } from './session-rotation.js';
 import {
   findChannel,
   formatMessages,
@@ -375,7 +377,17 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  let sessionId: string | undefined = sessions[group.folder];
+
+  // Auto-rotate session if transcript on disk is too large
+  if (sessionId && shouldRotateSession(group.folder)) {
+    const result = rotateSession(group.folder, sessionId);
+    if (result.rotated) {
+      delete sessions[group.folder];
+      deleteSession(group.folder);
+      sessionId = undefined;
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
