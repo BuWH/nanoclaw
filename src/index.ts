@@ -4,6 +4,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CONTAINER_IMAGE,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   IDLE_TIMEOUT,
@@ -15,6 +16,7 @@ import {
   X_HEALTH_CHECK_INTERVAL,
 } from './config.js';
 import { TelegramChannel } from './channels/telegram.js';
+import type { DoctorData } from './channels/telegram.js';
 import { initBotPool } from './channels/telegram.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
@@ -31,6 +33,7 @@ import {
 } from './container-runner.js';
 import {
   cleanupOrphans,
+  CONTAINER_RUNTIME_BIN,
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
@@ -182,6 +185,182 @@ export function _setRegisteredGroups(
   groups: Record<string, RegisteredGroup>,
 ): void {
   registeredGroups = groups;
+}
+
+/** Build a full system diagnostic snapshot for the /doctor command. */
+function buildDoctorData(): DoctorData {
+  const uptimeMs = Date.now() - startTime;
+  const memoryMb = Math.round(process.memoryUsage.rss() / 1024 / 1024);
+  const issues: string[] = [];
+
+  // Docker check
+  let dockerAvailable = false;
+  let dockerError: string | undefined;
+  try {
+    execSync(`${CONTAINER_RUNTIME_BIN} info`, {
+      stdio: 'pipe',
+      timeout: 10000,
+    });
+    dockerAvailable = true;
+  } catch (err) {
+    dockerError = err instanceof Error ? err.message.split('\n')[0] : 'unknown';
+    issues.push('Container runtime not responding');
+  }
+
+  // Container metrics
+  const metrics = queue.getQueueMetrics();
+
+  // Channel status
+  const channelStatus = channels.map((ch) => ({
+    name: ch.name,
+    connected: ch.isConnected(),
+  }));
+  const disconnected = channelStatus.filter((ch) => !ch.connected);
+  if (disconnected.length > 0) {
+    issues.push(
+      `${disconnected.length} channel(s) disconnected: ${disconnected.map((ch) => ch.name).join(', ')}`,
+    );
+  }
+
+  // Groups
+  const groupCount = Object.keys(registeredGroups).length;
+  const mainEntry = Object.entries(registeredGroups).find(
+    ([, g]) => g.isMain === true,
+  );
+  const mainName = mainEntry ? mainEntry[1].name : null;
+
+  // Scheduler stats
+  const allTasks = getAllTasks();
+  const activeTasks = allTasks.filter((t) => t.status === 'active');
+  const pausedTasks = allTasks.filter((t) => t.status === 'paused');
+  const byCron = allTasks.filter((t) => t.schedule_type === 'cron').length;
+  const byInterval = allTasks.filter(
+    (t) => t.schedule_type === 'interval',
+  ).length;
+  const byOnce = allTasks.filter((t) => t.schedule_type === 'once').length;
+
+  // Find next due task
+  let nextDue: string | null = null;
+  for (const task of activeTasks) {
+    if (task.next_run && task.next_run < '9999') {
+      if (!nextDue || task.next_run < nextDue) {
+        nextDue = task.next_run;
+      }
+    }
+  }
+
+  // Git checks
+  let gitBranch = 'unknown';
+  let gitCommitShort = 'unknown';
+  let gitCommitAge = 'unknown';
+  let gitClean = true;
+  let gitUpToDate: boolean | null = null;
+
+  try {
+    gitBranch = execSync('git rev-parse --abbrev-ref HEAD', {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 5000,
+    }).trim();
+
+    gitCommitShort = execSync('git rev-parse --short HEAD', {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 5000,
+    }).trim();
+
+    const commitTimestamp = execSync('git log -1 --format=%ct', {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 5000,
+    }).trim();
+    const ageMs = Date.now() - parseInt(commitTimestamp, 10) * 1000;
+    const ageHours = Math.floor(ageMs / 3600000);
+    const ageDays = Math.floor(ageHours / 24);
+    if (ageDays > 0) {
+      gitCommitAge = `${ageDays}d ${ageHours % 24}h ago`;
+    } else if (ageHours > 0) {
+      gitCommitAge = `${ageHours}h ago`;
+    } else {
+      gitCommitAge = `${Math.floor(ageMs / 60000)}m ago`;
+    }
+
+    const statusOutput = execSync('git status --porcelain', {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 5000,
+    }).trim();
+    gitClean = statusOutput.length === 0;
+    if (!gitClean) {
+      const dirtyCount = statusOutput.split('\n').filter(Boolean).length;
+      issues.push(`Git working tree dirty (${dirtyCount} files)`);
+    }
+
+    // Check if up-to-date with origin (uses cached fetch, does not fetch)
+    try {
+      execSync('git fetch origin --dry-run', {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 10000,
+      });
+      const local = execSync('git rev-parse HEAD', {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 5000,
+      }).trim();
+      const remote = execSync(`git rev-parse origin/${gitBranch}`, {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        timeout: 5000,
+      }).trim();
+      gitUpToDate = local === remote;
+      if (!gitUpToDate) {
+        issues.push('Not up-to-date with origin');
+      }
+    } catch {
+      gitUpToDate = null;
+    }
+  } catch {
+    issues.push('Git info unavailable');
+  }
+
+  // Run ledger
+  const runStats = getRunStats();
+  if (runStats.deadLetterCount > 0) {
+    issues.push(
+      `${runStats.deadLetterCount} dead-letter run(s) need attention`,
+    );
+  }
+
+  return {
+    pid: process.pid,
+    uptimeMs,
+    memoryMb,
+    nodeVersion: process.version,
+    docker: { available: dockerAvailable, error: dockerError },
+    containerImage: CONTAINER_IMAGE,
+    containers: { active: metrics.activeCount, max: metrics.maxContainers },
+    channels: channelStatus,
+    groups: { count: groupCount, mainName },
+    scheduler: {
+      total: allTasks.length,
+      active: activeTasks.length,
+      paused: pausedTasks.length,
+      byCron,
+      byInterval,
+      byOnce,
+      nextDue,
+    },
+    git: {
+      branch: gitBranch,
+      commitShort: gitCommitShort,
+      commitAge: gitCommitAge,
+      clean: gitClean,
+      upToDate: gitUpToDate,
+    },
+    runStats,
+    issues,
+  };
 }
 
 /**
@@ -969,6 +1148,12 @@ async function main(): Promise<void> {
       onRestart: () => shutdown('restart'),
       getScheduledTasks: () => getAllTasks(),
       getQueueStatus: () => queue.getStatus(),
+      getUptime: () => Date.now() - startTime,
+      getRunStats: () => getRunStats(),
+      getQueueMetrics: () => queue.getQueueMetrics(),
+      getChannelStatus: () =>
+        channels.map((ch) => ({ name: ch.name, connected: ch.isConnected() })),
+      getDoctorData: () => buildDoctorData(),
     });
     channels.push(telegram);
     await telegram.connect();

@@ -213,6 +213,7 @@ describe('TelegramChannel', () => {
 
       expect(currentBot().commandHandlers.has('chatid')).toBe(true);
       expect(currentBot().commandHandlers.has('ping')).toBe(true);
+      expect(currentBot().commandHandlers.has('doctor')).toBe(true);
       expect(currentBot().filterHandlers.has('message:text')).toBe(true);
       expect(currentBot().filterHandlers.has('message:photo')).toBe(true);
       expect(currentBot().filterHandlers.has('message:video')).toBe(true);
@@ -999,6 +1000,233 @@ describe('TelegramChannel', () => {
       await handler(ctx);
 
       expect(ctx.reply).toHaveBeenCalledWith('Andy 在线中');
+    });
+
+    it('/tasks displays formatted task list', async () => {
+      const opts = createTestOpts({
+        getScheduledTasks: () => [
+          {
+            id: 'task-abcd1234-efgh',
+            group_folder: 'test-group',
+            chat_jid: 'tg:100200300',
+            prompt: 'Send daily summary',
+            schedule_type: 'cron',
+            schedule_value: '0 9 * * *',
+            context_mode: 'group',
+            next_run: '2026-03-23T01:00:00.000Z',
+            last_run: '2026-03-22T01:00:00.000Z',
+            last_result: null,
+            status: 'active',
+            created_at: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const handler = currentBot().commandHandlers.get('tasks')!;
+      const ctx = { reply: vi.fn().mockResolvedValue(undefined) };
+
+      await handler(ctx);
+
+      const call = ctx.reply.mock.calls[0];
+      const text = call[0] as string;
+      // Check sequential numbering and status tag
+      expect(text).toContain('1. [active]');
+      // Check prompt preview
+      expect(text).toContain('Send daily summary');
+      // Check group name
+      expect(text).toContain('Test Group');
+      // Check schedule
+      expect(text).toContain('Cron:');
+      // Check compact ID footer
+      expect(text).toContain('IDs:');
+      expect(text).toContain('task-abc');
+      // Check HTML mode
+      expect(call[1]).toEqual({ parse_mode: 'HTML' });
+    });
+
+    it('/tasks shows empty message when no tasks', async () => {
+      const opts = createTestOpts({
+        getScheduledTasks: () => [],
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const handler = currentBot().commandHandlers.get('tasks')!;
+      const ctx = { reply: vi.fn() };
+
+      await handler(ctx);
+
+      expect(ctx.reply).toHaveBeenCalledWith('当前没有定时任务');
+    });
+
+    it('/status displays system dashboard', async () => {
+      const opts = createTestOpts({
+        getQueueStatus: () => [
+          {
+            groupJid: 'tg:100200300',
+            activeMessage: true,
+            idleWaiting: false,
+            pendingMessages: false,
+            activeTask: false,
+            pendingTaskCount: 0,
+            messageContainerName: 'nanoclaw-test-abc',
+            taskContainerName: null,
+          },
+        ],
+        getUptime: () => 7200000, // 2 hours
+        getQueueMetrics: () => ({
+          activeCount: 1,
+          maxContainers: 7,
+          waitingByPriority: { mainMessages: 0, messages: 0, tasks: 0 },
+        }),
+        getChannelStatus: () => [{ name: 'telegram', connected: true }],
+        getRunStats: () => ({
+          total: 10,
+          byStatus: { acked: 8, failed: 1, dead_letter: 1 },
+          deadLetterCount: 1,
+        }),
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const handler = currentBot().commandHandlers.get('status')!;
+      const ctx = { reply: vi.fn().mockResolvedValue(undefined) };
+
+      await handler(ctx);
+
+      const call = ctx.reply.mock.calls[0];
+      const text = call[0] as string;
+      expect(text).toContain('System Status');
+      expect(text).toContain('Uptime:');
+      expect(text).toContain('2h');
+      expect(text).toContain('Containers: 1/7');
+      expect(text).toContain('Test Group');
+      expect(text).toContain('Msg: running');
+      expect(text).toContain('telegram: connected');
+      expect(text).toContain('Run Ledger');
+      expect(call[1]).toEqual({ parse_mode: 'HTML' });
+    });
+
+    it('/doctor registers command handler', async () => {
+      const opts = createTestOpts({
+        getDoctorData: () => ({
+          pid: 12345,
+          uptimeMs: 3600000,
+          memoryMb: 128,
+          nodeVersion: 'v22.0.0',
+          docker: { available: true },
+          containerImage: 'nanoclaw-agent:latest',
+          containers: { active: 2, max: 7 },
+          channels: [{ name: 'telegram', connected: true }],
+          groups: { count: 3, mainName: 'Main Group' },
+          scheduler: {
+            total: 5,
+            active: 3,
+            paused: 2,
+            byCron: 2,
+            byInterval: 1,
+            byOnce: 0,
+            nextDue: '2026-03-22T10:00:00.000Z',
+          },
+          git: {
+            branch: 'main',
+            commitShort: 'abc1234',
+            commitAge: '2h ago',
+            clean: true,
+            upToDate: true,
+          },
+          runStats: {
+            total: 20,
+            byStatus: { acked: 18, failed: 2 },
+            deadLetterCount: 0,
+          },
+          issues: [],
+        }),
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      expect(currentBot().commandHandlers.has('doctor')).toBe(true);
+
+      const handler = currentBot().commandHandlers.get('doctor')!;
+      const ctx = { reply: vi.fn().mockResolvedValue(undefined) };
+
+      await handler(ctx);
+
+      // First call is "Running diagnostics..."
+      expect(ctx.reply).toHaveBeenCalledWith('Running diagnostics...');
+      // Second call is the full diagnostic report
+      const lastCall = ctx.reply.mock.calls[ctx.reply.mock.calls.length - 1];
+      const text = lastCall[0] as string;
+      expect(text).toContain('System Diagnostic');
+      expect(text).toContain('PID: 12345');
+      expect(text).toContain('1h 0m');
+      expect(text).toContain('Docker: running');
+      expect(text).toContain('Active: 2/7');
+      expect(text).toContain('telegram: connected');
+      expect(text).toContain('Registered: 3 groups');
+      expect(text).toContain('Main: Main Group');
+      expect(text).toContain('Branch: main');
+      expect(text).toContain('abc1234');
+      expect(text).toContain('All systems healthy');
+    });
+
+    it('/doctor shows issues when problems detected', async () => {
+      const opts = createTestOpts({
+        getDoctorData: () => ({
+          pid: 12345,
+          uptimeMs: 60000,
+          memoryMb: 64,
+          nodeVersion: 'v22.0.0',
+          docker: { available: false, error: 'Cannot connect' },
+          containerImage: 'nanoclaw-agent:latest',
+          containers: { active: 0, max: 7 },
+          channels: [{ name: 'telegram', connected: true }],
+          groups: { count: 1, mainName: null },
+          scheduler: {
+            total: 0,
+            active: 0,
+            paused: 0,
+            byCron: 0,
+            byInterval: 0,
+            byOnce: 0,
+            nextDue: null,
+          },
+          git: {
+            branch: 'main',
+            commitShort: 'def5678',
+            commitAge: '1d ago',
+            clean: false,
+            upToDate: false,
+          },
+          runStats: {
+            total: 5,
+            byStatus: { failed: 3, dead_letter: 2 },
+            deadLetterCount: 2,
+          },
+          issues: [
+            'Container runtime not responding',
+            'Git working tree dirty (3 files)',
+            '2 dead-letter run(s) need attention',
+          ],
+        }),
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const handler = currentBot().commandHandlers.get('doctor')!;
+      const ctx = { reply: vi.fn().mockResolvedValue(undefined) };
+
+      await handler(ctx);
+
+      const lastCall = ctx.reply.mock.calls[ctx.reply.mock.calls.length - 1];
+      const text = lastCall[0] as string;
+      expect(text).toContain('! Container runtime not responding');
+      expect(text).toContain('! Git working tree dirty');
+      expect(text).toContain('! 2 dead-letter run(s) need attention');
+      expect(text).not.toContain('All systems healthy');
     });
   });
 
