@@ -14,6 +14,19 @@ interface LockInfo {
   operation: string;
 }
 
+/**
+ * Check if a process is still alive.
+ * Sending signal 0 doesn't kill the process, just checks existence.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function acquireGitLock(operation: string): boolean {
   fs.mkdirSync(LOCK_DIR, { recursive: true });
 
@@ -23,14 +36,21 @@ export function acquireGitLock(operation: string): boolean {
       const existing: LockInfo = JSON.parse(
         fs.readFileSync(GIT_LOCK_FILE, 'utf-8'),
       );
-      if (Date.now() - existing.timestamp < LOCK_STALE_MS) {
+      const isStale = Date.now() - existing.timestamp >= LOCK_STALE_MS;
+      const isDeadProcess =
+        existing.pid !== process.pid && !isProcessAlive(existing.pid);
+
+      if (!isStale && !isDeadProcess) {
         logger.warn(
           { existingLock: existing, requestedOp: operation },
           'Git lock held by another process',
         );
         return false;
       }
-      logger.warn({ staleLock: existing }, 'Removing stale git lock');
+      logger.warn(
+        { staleLock: existing, reason: isDeadProcess ? 'dead-pid' : 'timeout' },
+        'Removing stale git lock',
+      );
     } catch {
       /* corrupted lock file, remove it */
     }
@@ -117,7 +137,9 @@ export function getStaleLockInfo(): LockInfo | null {
   try {
     if (!fs.existsSync(GIT_LOCK_FILE)) return null;
     const info: LockInfo = JSON.parse(fs.readFileSync(GIT_LOCK_FILE, 'utf-8'));
-    if (Date.now() - info.timestamp >= LOCK_STALE_MS) {
+    const isStale = Date.now() - info.timestamp >= LOCK_STALE_MS;
+    const isDeadProcess = info.pid !== process.pid && !isProcessAlive(info.pid);
+    if (isStale || isDeadProcess) {
       return info;
     }
   } catch {
