@@ -14,6 +14,11 @@ import {
 
 let db: Database.Database;
 
+/** Returns the module-level database instance. Used by run-ledger.ts. */
+export function getDb(): Database.Database {
+  return db;
+}
+
 function createSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS chats (
@@ -82,6 +87,23 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS run_ledger (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      group_jid TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      payload TEXT,
+      result TEXT,
+      error TEXT,
+      retry_count INTEGER DEFAULT 0,
+      max_retries INTEGER DEFAULT 3,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_run_ledger_status ON run_ledger(status);
+    CREATE INDEX IF NOT EXISTS idx_run_ledger_group ON run_ledger(group_jid, created_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)

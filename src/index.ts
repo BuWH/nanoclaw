@@ -73,6 +73,12 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import {
+  createRun,
+  getRunStats,
+  pruneOldRuns,
+  transitionRun,
+} from './run-ledger.js';
 import { startSchedulerLoop, triggerSchedulerDrain } from './task-scheduler.js';
 import { ButtonRows, Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -243,6 +249,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const prompt = formatMessages(missedMessages, TIMEZONE);
   const lastMessageId = missedMessages[0].id;
 
+  // Track this execution in the run ledger
+  const run = createRun('message', chatJid, group.folder, prompt.slice(0, 200));
+
   // Collect images from messages
   const images = collectImages(missedMessages);
   if (images.length > 0) {
@@ -289,6 +298,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  let streamingTransitioned = false;
+
+  transitionRun(run.id, 'running');
 
   const output = await runAgent(
     group,
@@ -306,6 +318,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
+          if (!streamingTransitioned) {
+            transitionRun(run.id, 'streaming');
+            streamingTransitioned = true;
+          }
           await channel.setTyping?.(chatJid, false);
           await channel.sendMessage(chatJid, text, lastMessageId);
           // Warnings (e.g. large session) should be sent to the user but must NOT
@@ -313,6 +329,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           // cursor rollback and the user's prompt is silently lost.
           if (!result.isWarning) {
             outputSentToUser = true;
+            transitionRun(run.id, 'reply_sent');
           }
         }
         // Only reset idle timer on actual results, not warnings or session-update markers
@@ -342,8 +359,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
+      transitionRun(run.id, 'acked');
       return true;
     }
+
+    transitionRun(run.id, 'failed', { error: 'container error' });
 
     // If this is already a retry (retryCount >= 1), the same messages caused
     // the previous failure too.  Advancing the cursor skips the problematic
@@ -354,6 +374,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         { group: group.name, messageCount: missedMessages.length },
         'Consecutive failures for group — skipping problematic messages to break retry loop',
       );
+      // Transition to failed — auto-promotes to dead_letter when retries exhausted
+      transitionRun(run.id, 'failed', {
+        error: 'Consecutive failures — messages skipped to break retry loop',
+      });
       // Cursor was already advanced before running the agent; just keep it.
       return true;
     }
@@ -368,6 +392,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
+  transitionRun(run.id, 'acked');
   return true;
 }
 
@@ -672,6 +697,7 @@ function startHealthMonitor(): void {
     // Check for stale git lock files
     const staleLock = getStaleLockInfo();
 
+    const runStats = getRunStats();
     logger.info(
       {
         uptimeMin: Math.round((Date.now() - startTime) / 60_000),
@@ -684,6 +710,8 @@ function startHealthMonitor(): void {
           ? { pid: staleLock.pid, operation: staleLock.operation }
           : null,
         queueMetrics: metrics,
+        deadLetters: runStats.deadLetterCount,
+        runsByStatus: runStats.byStatus,
       },
       'Heartbeat',
     );
@@ -711,7 +739,22 @@ function startHealthMonitor(): void {
     10 * 60 * 1000,
   );
 
-  // 4. Message loop stall detection
+  // 4. Daily prune of old run ledger entries (every 24 hours)
+  setInterval(
+    () => {
+      try {
+        const pruned = pruneOldRuns(7);
+        if (pruned > 0) {
+          logger.info({ pruned }, 'Pruned old run ledger entries');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to prune run ledger');
+      }
+    },
+    24 * 60 * 60 * 1000,
+  );
+
+  // 5. Message loop stall detection
   //    The message loop updates lastMessageLoopTick every ~2s. If it hasn't
   //    been updated for 60s, the loop is stuck.
   const LOOP_STALL_THRESHOLD = 60_000;

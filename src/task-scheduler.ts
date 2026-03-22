@@ -21,6 +21,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { createRun, transitionRun } from './run-ledger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -110,6 +111,15 @@ async function runTask(
     'Running scheduled task',
   );
 
+  // Track this task execution in the run ledger
+  const run = createRun(
+    'task',
+    task.chat_jid,
+    task.group_folder,
+    task.prompt.slice(0, 200),
+  );
+  transitionRun(run.id, 'running');
+
   const groups = deps.registeredGroups();
   const group = Object.values(groups).find(
     (g) => g.folder === task.group_folder,
@@ -193,6 +203,7 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+  let sendFailed = false;
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -256,6 +267,7 @@ async function runTask(
 
         if (streamedOutput.result) {
           result = streamedOutput.result;
+          transitionRun(run.id, 'streaming');
           logger.info(
             {
               taskId: task.id,
@@ -267,16 +279,26 @@ async function runTask(
           // Forward result to primary chat
           try {
             await deps.sendMessage(task.chat_jid, streamedOutput.result);
-          } catch (err) {
-            logger.error(
-              {
-                taskId: task.id,
-                chatJid: task.chat_jid,
-                resultLength: streamedOutput.result.length,
-                err,
-              },
-              'Failed to send task result to primary chat (message lost)',
+            transitionRun(run.id, 'reply_sent');
+          } catch (sendErr) {
+            logger.warn(
+              { taskId: task.id, err: sendErr },
+              'Task result send failed, retrying once',
             );
+            try {
+              await new Promise((r) => setTimeout(r, 3000));
+              await deps.sendMessage(task.chat_jid, streamedOutput.result);
+              transitionRun(run.id, 'reply_sent');
+            } catch (retryErr) {
+              logger.error(
+                { taskId: task.id, err: retryErr },
+                'Task result send retry failed (message in dead letter)',
+              );
+              sendFailed = true;
+              transitionRun(run.id, 'failed', {
+                error: 'message delivery failed after retry',
+              });
+            }
           }
           scheduleClose();
         }
@@ -317,6 +339,12 @@ async function runTask(
       },
       error ? 'Task completed with error' : 'Task completed successfully',
     );
+
+    if (error) {
+      transitionRun(run.id, 'failed', { error });
+    } else if (!sendFailed) {
+      transitionRun(run.id, 'acked');
+    }
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
     error = err instanceof Error ? err.message : String(err);
@@ -324,6 +352,7 @@ async function runTask(
       { taskId: task.id, durationMs: Date.now() - startTime, error },
       'Task failed with exception',
     );
+    transitionRun(run.id, 'failed', { error });
   }
 
   const durationMs = Date.now() - startTime;
