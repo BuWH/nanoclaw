@@ -45,9 +45,9 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
 export const CONTAINER_TIMEOUT = parseInt(
-  process.env.CONTAINER_TIMEOUT || '1800000',
+  process.env.CONTAINER_TIMEOUT || '10800000',
   10,
-);
+); // 3 hours default — complex tasks (coding, research) can take a long time
 export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760',
   10,
@@ -63,9 +63,9 @@ export const X_HEALTH_CHECK_INTERVAL = parseInt(
 );
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '120000', 10); // 2min default — how long to keep container alive after last result
 export const FIRST_OUTPUT_TIMEOUT = parseInt(
-  process.env.FIRST_OUTPUT_TIMEOUT || '300000',
+  process.env.FIRST_OUTPUT_TIMEOUT || '600000',
   10,
-); // 5min default — kill container if no output marker received within this time
+); // 10min default — kill container if no output marker received within this time
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '7', 10) || 7,

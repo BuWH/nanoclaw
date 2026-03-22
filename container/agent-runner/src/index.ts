@@ -65,7 +65,7 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
-const QUERY_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutes
+const QUERY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — complex tasks (coding, research) can take a long time
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
