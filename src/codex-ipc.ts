@@ -4,8 +4,10 @@
  * Handles codex_* IPC messages from container agents.
  * Spawns Codex CLI on the host to review GitHub PRs and post comments.
  *
+ * Any group can trigger reviews -- Codex only reads the PR diff and posts
+ * comments, so there is no privilege escalation risk.
+ *
  * Security:
- * - Only main group can trigger reviews
  * - Codex runs in --full-auto sandbox (workspace-write, approval on-failure)
  * - Repo cloned to /tmp/ (isolated from NanoClaw source)
  */
@@ -344,7 +346,7 @@ function writeResult(
 export async function handleCodexIpc(
   data: Record<string, unknown>,
   sourceGroup: string,
-  isMain: boolean,
+  _isMain: boolean,
   dataDir: string,
 ): Promise<boolean> {
   const type = data.type as string;
@@ -352,15 +354,6 @@ export async function handleCodexIpc(
   // Only handle codex_* types
   if (!type?.startsWith('codex_')) {
     return false;
-  }
-
-  // Only main group can use Codex integration
-  if (!isMain) {
-    logger.warn(
-      { sourceGroup, type },
-      'Codex integration blocked: not main group',
-    );
-    return true;
   }
 
   const requestId = data.requestId as string;

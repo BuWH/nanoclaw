@@ -48,18 +48,14 @@ Ask the user if they want you to fix the issues Codex identified.
 
 ### Step 4: Fix issues (if user agrees)
 
-1. Clone the repo to `/tmp/`:
-   ```bash
-   ORIGIN_URL=$(git -C /workspace/extra/code/nanoclaw remote get-url origin 2>/dev/null || echo "")
-   # For non-NanoClaw repos, use gh:
-   gh repo clone owner/repo /tmp/fix-pr-123
-   cd /tmp/fix-pr-123
-   gh pr checkout 123
-   ```
-2. Address each review comment
-3. Commit with a descriptive message referencing the review
-4. Push the fixes
-5. Tell the user fixes have been pushed
+You already have `gh` CLI and `git` available in the container. Use the self-modify skill workflow to apply fixes:
+
+1. Use `gh pr diff <number>` to understand the changes
+2. Check out the PR branch in your working copy
+3. Apply the fixes directly
+4. Commit and push
+
+Do NOT clone the repo again -- use the self-modify skill's existing workflow for making changes and pushing.
 
 ### Step 5: Re-check (optional)
 
@@ -73,7 +69,6 @@ After pushing fixes, you can run `codex_review_pr` again to verify the issues ar
 
 ## Limitations
 
-- Main group only (non-main groups cannot trigger reviews)
 - Review timeout: 5 minutes
 - Codex uses `gh` CLI for all GitHub operations (must be authenticated on host)
 - Codex runs in `--full-auto` mode (sandbox: workspace-write, approval: on-failure)

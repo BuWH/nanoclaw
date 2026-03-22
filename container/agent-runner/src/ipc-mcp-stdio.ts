@@ -684,7 +684,7 @@ Uses the twitter-scraper API on the host machine.`,
   );
 }
 
-// --- Codex Integration Tools (main group only) ---
+// --- Codex Integration Tools (all groups) ---
 
 const CODEX_RESULTS_DIR = path.join(IPC_DIR, 'codex_results');
 
@@ -713,16 +713,15 @@ async function waitForCodexResult(
   return { success: false, message: 'Codex review timed out waiting for result' };
 }
 
-if (isMain) {
-  server.tool(
-    'codex_review_pr',
-    `Request a Codex CLI code review for a GitHub pull request.
+server.tool(
+  'codex_review_pr',
+  `Request a Codex CLI code review for a GitHub pull request.
 
 Codex runs on the host machine using gpt-5.3-codex model. It clones the repo,
 reads the PR diff, analyzes the code, and posts review comments directly on the PR
 via \`gh pr review\`.
 
-Returns the review summary including any comments posted. Main group only.
+Returns the review summary including any comments posted.
 
 Use this when:
 - The user shares a PR link and wants a code review
@@ -732,33 +731,32 @@ Use this when:
 After receiving the results:
 1. Present the review comments to the user
 2. Ask if they want you to fix the issues
-3. If yes, clone the repo, apply fixes, commit, and push`,
-    {
-      pr_url: z
-        .string()
-        .describe(
-          'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123) or shorthand (owner/repo#123)',
-        ),
-    },
-    async (args) => {
-      const requestId = `codexreview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      writeIpcFile(TASKS_DIR, {
-        type: 'codex_review_pr',
-        requestId,
-        prUrl: args.pr_url,
-        groupFolder,
-        timestamp: new Date().toISOString(),
-      });
+3. If yes, fix the issues yourself (you have gh CLI and git available)`,
+  {
+    pr_url: z
+      .string()
+      .describe(
+        'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123) or shorthand (owner/repo#123)',
+      ),
+  },
+  async (args) => {
+    const requestId = `codexreview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'codex_review_pr',
+      requestId,
+      prUrl: args.pr_url,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
 
-      // Codex reviews take significantly longer than X operations
-      const result = await waitForCodexResult(requestId, 300000);
-      return {
-        content: [{ type: 'text' as const, text: result.message }],
-        isError: !result.success,
-      };
-    },
-  );
-}
+    // Codex reviews take significantly longer than X operations
+    const result = await waitForCodexResult(requestId, 300000);
+    return {
+      content: [{ type: 'text' as const, text: result.message }],
+      isError: !result.success,
+    };
+  },
+);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
