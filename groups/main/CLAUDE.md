@@ -287,3 +287,17 @@ When scheduling tasks for other groups, use the `target_group_jid` parameter wit
 - `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
 
 The task will run in that group's context with access to their files and memory.
+
+---
+
+## Self-Modification (NanoClaw Source Changes)
+
+You can modify NanoClaw's own source code, but ONLY via pull request.
+
+- NanoClaw source is at `/workspace/extra/code/nanoclaw/` (read-write)
+- Use the `/self-modify` workflow when asked to change NanoClaw's behavior
+- NEVER push directly to main -- GitHub branch protection will reject it
+- A pre-push hook also blocks direct pushes to main as a safety net
+- After the user merges your PR, NanoClaw auto-detects the change within 60 seconds, rebuilds, and restarts
+
+When the user asks you to "change how you work", "add a feature to yourself", "fix a bug in NanoClaw", or similar -- follow the `/self-modify` skill workflow.

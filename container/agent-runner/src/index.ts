@@ -604,6 +604,29 @@ async function main(): Promise<void> {
       } catch (ghErr) {
         log(`Failed to authenticate gh CLI: ${ghErr instanceof Error ? ghErr.message : String(ghErr)}`);
       }
+
+      // Install pre-push hook to block direct pushes to main.
+      // All NanoClaw source changes must go through pull requests.
+      try {
+        const hooksDir = '/tmp/.git-hooks';
+        fs.mkdirSync(hooksDir, { recursive: true });
+        fs.writeFileSync(path.join(hooksDir, 'pre-push'), [
+          '#!/bin/sh',
+          '# Block direct pushes to main -- all changes must go through PRs',
+          'while read local_ref local_sha remote_ref remote_sha; do',
+          '  if echo "$remote_ref" | grep -q "refs/heads/main"; then',
+          '    echo "ERROR: Direct push to main is blocked. Create a PR instead." >&2',
+          '    echo "Use: git push origin agent/<branch-name>" >&2',
+          '    exit 1',
+          '  fi',
+          'done',
+          'exit 0',
+        ].join('\n'), { mode: 0o755 });
+        execSync(`git config --global core.hooksPath ${hooksDir}`, { stdio: 'ignore' });
+        log('Pre-push hook installed (blocks direct push to main)');
+      } catch (hookErr) {
+        log(`Failed to install pre-push hook: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`);
+      }
     } catch (err) {
       log(`Failed to configure git credentials: ${err instanceof Error ? err.message : String(err)}`);
     }

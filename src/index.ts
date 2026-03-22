@@ -68,6 +68,7 @@ import { startSchedulerLoop, triggerSchedulerDrain } from './task-scheduler.js';
 import { ButtonRows, Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { startXHealthCheck } from './x-health.js';
+import { startAutoUpdateLoop } from './auto-update.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -908,6 +909,7 @@ async function main(): Promise<void> {
   recoverPendingMessages();
   startHealthMonitor();
   stopXHealthCheck = startXHealthCheck(X_HEALTH_CHECK_INTERVAL);
+  startAutoUpdateLoop();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);

@@ -1,0 +1,2 @@
+npm run build
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
