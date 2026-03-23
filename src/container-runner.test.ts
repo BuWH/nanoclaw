@@ -210,4 +210,35 @@ describe('container-runner timeout behavior', () => {
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
   });
+
+  it('error exit populates exitCode, durationMs, stderrTail, logFile', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Push stderr before close
+    fakeProc.stderr.push('Error: ENOMEM\nCannot allocate memory');
+    fakeProc.stderr.push(null); // signal end
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Container crashes with code 137
+    fakeProc.emit('close', 137);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+
+    expect(result.status).toBe('error');
+    expect(result.exitCode).toBe(137);
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    expect(result.stderrTail).toContain('ENOMEM');
+    expect(result.logFile).toBeDefined();
+    expect(result.logFile).toContain('.log');
+  });
 });

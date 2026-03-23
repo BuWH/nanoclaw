@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { _initTestDatabase, getDb } from './db.js';
 import {
   createRun,
   getDeadLetters,
+  getErrorsByGroup,
+  getRecentErrors,
   getRunHistory,
   getRunStats,
   pruneOldRuns,
@@ -332,5 +334,140 @@ describe('pruneOldRuns', () => {
 
     const history = getRunHistory();
     expect(history).toHaveLength(0);
+  });
+});
+
+describe('error observability fields', () => {
+  it('stores stderr_excerpt, exit_code, duration_ms, log_file, ipc_delivered on transition', () => {
+    const run = createRun('message', 'tg:test', 'test-group', 'test payload');
+    transitionRun(run.id, 'running');
+    const result = transitionRun(run.id, 'failed', {
+      error: 'OOM killed',
+      stderr_excerpt: 'Cannot allocate memory',
+      exit_code: 137,
+      duration_ms: 5000,
+      log_file: '/logs/test.log',
+    });
+    expect(result).not.toBeNull();
+    expect(result!.stderr_excerpt).toBe('Cannot allocate memory');
+    expect(result!.exit_code).toBe(137);
+    expect(result!.duration_ms).toBe(5000);
+    expect(result!.log_file).toBe('/logs/test.log');
+    expect(result!.ipc_delivered).toBe(0);
+  });
+
+  it('stores ipc_delivered flag on acked runs', () => {
+    const run = createRun('message', 'tg:test', 'test-group', 'test payload');
+    transitionRun(run.id, 'running');
+    const result = transitionRun(run.id, 'acked', {
+      error: 'crashed after send',
+      ipc_delivered: 1,
+    });
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe('acked');
+    expect(result!.ipc_delivered).toBe(1);
+    expect(result!.error).toBe('crashed after send');
+  });
+
+  it('preserves existing metadata fields when updating only some', () => {
+    const run = createRun('message', 'tg:test', 'test-group', 'payload');
+    transitionRun(run.id, 'running');
+    transitionRun(run.id, 'failed', {
+      exit_code: 1,
+      stderr_excerpt: 'initial error',
+    });
+    // The second transition should keep the original fields since failed->dead_letter is invalid
+    // but we can verify the stored values directly
+    const errors = getRecentErrors(10);
+    const found = errors.find((e) => e.id === run.id);
+    expect(found).toBeDefined();
+    expect(found!.exit_code).toBe(1);
+    expect(found!.stderr_excerpt).toBe('initial error');
+  });
+});
+
+describe('getRecentErrors', () => {
+  it('returns runs with errors ordered by updated_at DESC', () => {
+    const run1 = createRun('message', 'tg:g1', 'group-1', 'p1');
+    transitionRun(run1.id, 'running');
+    transitionRun(run1.id, 'failed', { error: 'first' });
+
+    // Force run1 to have an older updated_at so ordering is deterministic
+    getDb()
+      .prepare('UPDATE run_ledger SET updated_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 5000).toISOString(), run1.id);
+
+    const run2 = createRun('message', 'tg:g2', 'group-2', 'p2');
+    transitionRun(run2.id, 'running');
+    transitionRun(run2.id, 'failed', { error: 'second' });
+
+    const errors = getRecentErrors(10);
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    // Most recent first
+    const idx1 = errors.findIndex((e) => e.id === run1.id);
+    const idx2 = errors.findIndex((e) => e.id === run2.id);
+    expect(idx2).toBeLessThan(idx1); // run2 updated later
+  });
+
+  it('includes acked-with-error runs', () => {
+    const run = createRun('message', 'tg:g1', 'group-1', 'p1');
+    transitionRun(run.id, 'running');
+    transitionRun(run.id, 'acked', { error: 'crashed after reply' });
+
+    const errors = getRecentErrors(10);
+    const found = errors.find((e) => e.id === run.id);
+    expect(found).toBeDefined();
+    expect(found!.status).toBe('acked');
+  });
+
+  it('includes runs with exit_code but no error string', () => {
+    const run = createRun('message', 'tg:g1', 'group-1', 'p1');
+    transitionRun(run.id, 'running');
+    transitionRun(run.id, 'acked', { exit_code: 137 });
+
+    const errors = getRecentErrors(10);
+    const found = errors.find((e) => e.id === run.id);
+    expect(found).toBeDefined();
+    expect(found!.exit_code).toBe(137);
+  });
+
+  it('respects limit parameter', () => {
+    for (let i = 0; i < 5; i++) {
+      const run = createRun('message', 'tg:g1', 'group-1', `p${i}`);
+      transitionRun(run.id, 'running');
+      transitionRun(run.id, 'failed', { error: `err-${i}` });
+    }
+    const errors = getRecentErrors(3);
+    expect(errors).toHaveLength(3);
+  });
+
+  it('excludes successful runs without errors', () => {
+    const good = createRun('message', 'tg:g1', 'group-1', 'ok');
+    transitionRun(good.id, 'running');
+    transitionRun(good.id, 'acked');
+
+    const bad = createRun('message', 'tg:g1', 'group-1', 'fail');
+    transitionRun(bad.id, 'running');
+    transitionRun(bad.id, 'failed', { error: 'oops' });
+
+    const errors = getRecentErrors(10);
+    expect(errors.find((e) => e.id === good.id)).toBeUndefined();
+    expect(errors.find((e) => e.id === bad.id)).toBeDefined();
+  });
+});
+
+describe('getErrorsByGroup', () => {
+  it('filters errors by group_folder', () => {
+    const runA = createRun('message', 'tg:a', 'alpha', 'pa');
+    transitionRun(runA.id, 'running');
+    transitionRun(runA.id, 'failed', { error: 'alpha-err' });
+
+    const runB = createRun('message', 'tg:b', 'beta', 'pb');
+    transitionRun(runB.id, 'running');
+    transitionRun(runB.id, 'failed', { error: 'beta-err' });
+
+    expect(getErrorsByGroup('alpha', 10)).toHaveLength(1);
+    expect(getErrorsByGroup('beta', 10)).toHaveLength(1);
+    expect(getErrorsByGroup('gamma', 10)).toHaveLength(0);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
   recordDeliveryAck,
@@ -54,5 +54,29 @@ describe('delivery-ack', () => {
 
     clearDeliveryAck(runId);
     expect(wasDelivered(runId)).toBe(false);
+  });
+
+  it('evicts stale entries when map exceeds 100', () => {
+    const baseTime = 1_700_000_000_000;
+    let currentTime = baseTime;
+    vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
+
+    // Fill 101 entries at base time
+    for (let i = 0; i < 101; i++) {
+      recordDeliveryAck(`stale-${i}`);
+    }
+
+    // Advance past MAX_AGE_MS (10 minutes)
+    currentTime = baseTime + 11 * 60 * 1000;
+
+    // Next record triggers eviction
+    recordDeliveryAck('fresh');
+
+    for (let i = 0; i < 101; i++) {
+      expect(wasDelivered(`stale-${i}`)).toBe(false);
+    }
+    expect(wasDelivered('fresh')).toBe(true);
+
+    vi.restoreAllMocks();
   });
 });

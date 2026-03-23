@@ -145,3 +145,17 @@ Container                    Host Process
 
 - PR #26: https://github.com/BuWH/nanoclaw/pull/26
 - Branch: `fix/ipc-delivery-ack-dedup`
+
+---
+
+## Test Coverage
+
+### Unit Tests
+- `delivery-ack.test.ts`: Map lifecycle, TTL eviction, run isolation, idempotent recording
+- `run-ledger.test.ts`: Error metadata columns, getRecentErrors/getErrorsByGroup queries, acked-with-error visibility
+
+### Full-Pipeline Mock Tests
+- `e2e-ipc.test.ts`: Streaming output + crash (no dup), crash without output (error fields populated), exitCode/durationMs/stderrTail/logFile presence
+
+### Real Container E2E
+- `e2e-real-container.test.ts`: Docker container startup, IPC file structure, delivery ack recording, multi-runId isolation

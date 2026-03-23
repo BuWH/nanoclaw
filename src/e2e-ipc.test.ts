@@ -1,20 +1,18 @@
 /**
  * E2E Integration Tests: IPC delivery-ack dedup and error observability.
  *
- * Group 1 -- Delivery-ack unit tests:
- *   - Record / check / clear lifecycle
- *   - TTL eviction under map size threshold
- *   - Wrong-run isolation (no cross-contamination)
- *
- * Group 2 -- Full-pipeline mock tests (runContainerAgent + fake process):
+ * Group 1 -- Full-pipeline mock tests (runContainerAgent + fake process):
  *   - Streaming output then crash: no duplicate delivery
  *   - Crash without any output: error metadata populated
  *   - Error includes exitCode, durationMs, stderrTail, logFile
  *
- * Group 3 -- run_ledger error observability:
+ * Group 2 -- run_ledger error observability:
  *   - getRecentErrors returns acked-with-error runs
  *   - getErrorsByGroup filters correctly
  *   - Error metadata stored in run_ledger and queryable
+ *
+ * Note: Delivery-ack unit tests (record/check/clear, TTL eviction,
+ * wrong-run isolation) live in delivery-ack.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
@@ -126,12 +124,7 @@ import {
   getRecentErrors,
   getErrorsByGroup,
 } from './run-ledger.js';
-import {
-  recordDeliveryAck,
-  wasDelivered,
-  clearDeliveryAck,
-  _resetForTest,
-} from './delivery-ack.js';
+import { _resetForTest } from './delivery-ack.js';
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -153,76 +146,7 @@ function emitOutput(
 }
 
 // ---------------------------------------------------------------------------
-// Group 1: Delivery-ack unit tests
-// ---------------------------------------------------------------------------
-
-describe('E2E: IPC delivery-ack dedup', () => {
-  beforeEach(() => {
-    _resetForTest();
-    _initTestDatabase();
-  });
-
-  it('IPC delivery then crash: record, check, clear lifecycle', () => {
-    const runId = 'run-ipc-crash-001';
-
-    // Before recording, nothing is delivered
-    expect(wasDelivered(runId)).toBe(false);
-
-    // Simulate IPC watcher calling recordDeliveryAck after send_message
-    recordDeliveryAck(runId);
-    expect(wasDelivered(runId)).toBe(true);
-
-    // After the dedup logic consumes the ack, clear it
-    clearDeliveryAck(runId);
-    expect(wasDelivered(runId)).toBe(false);
-  });
-
-  it('TTL eviction: stale entries are evicted when map exceeds 100', () => {
-    // Freeze time at a base point
-    const baseTime = 1_700_000_000_000;
-    let currentTime = baseTime;
-    vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
-
-    // Record 101 entries at the base time (these will become "old")
-    for (let i = 0; i < 101; i++) {
-      recordDeliveryAck(`stale-run-${i}`);
-    }
-
-    // Advance time by more than MAX_AGE_MS (10 minutes = 600_000 ms)
-    currentTime = baseTime + 11 * 60 * 1000;
-
-    // Record one more -- this triggers eviction because size > 100
-    recordDeliveryAck('fresh-run');
-
-    // All stale entries should be evicted
-    for (let i = 0; i < 101; i++) {
-      expect(wasDelivered(`stale-run-${i}`)).toBe(false);
-    }
-
-    // The fresh entry should still be present
-    expect(wasDelivered('fresh-run')).toBe(true);
-
-    vi.restoreAllMocks();
-  });
-
-  it('wrong-run contamination: run-A ack does not affect run-B', () => {
-    const runA = 'run-A-isolated';
-    const runB = 'run-B-isolated';
-
-    recordDeliveryAck(runA);
-
-    expect(wasDelivered(runA)).toBe(true);
-    expect(wasDelivered(runB)).toBe(false);
-
-    clearDeliveryAck(runA);
-
-    expect(wasDelivered(runA)).toBe(false);
-    expect(wasDelivered(runB)).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Group 2: Full-pipeline mock tests (runContainerAgent + fake process)
+// Group 1: Full-pipeline mock tests (runContainerAgent + fake process)
 // ---------------------------------------------------------------------------
 
 describe('E2E: Full-pipeline IPC dedup scenarios', () => {
@@ -362,7 +286,7 @@ describe('E2E: Full-pipeline IPC dedup scenarios', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group 3: run_ledger error observability
+// Group 2: run_ledger error observability
 // ---------------------------------------------------------------------------
 
 describe('E2E: run_ledger error metadata and queries', () => {
