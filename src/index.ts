@@ -8,6 +8,7 @@ import {
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   IDLE_TIMEOUT,
+  IPC_POLL_INTERVAL,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TELEGRAM_BOT_TOKEN,
@@ -58,6 +59,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { wasDelivered, clearDeliveryAck } from './delivery-ack.js';
 import { shouldRotateSession, rotateSession } from './session-rotation.js';
 import {
   findChannel,
@@ -451,7 +453,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   fs.mkdirSync(groupIpcDir, { recursive: true });
   fs.writeFileSync(
     path.join(groupIpcDir, 'reply_context.json'),
-    JSON.stringify({ lastMessageId }),
+    JSON.stringify({ lastMessageId, runId: run.id }),
   );
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
@@ -536,7 +538,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
-  if (output === 'error' || hadError) {
+  if (output.status === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -544,11 +546,34 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
-      transitionRun(run.id, 'acked');
+      transitionRun(run.id, 'acked', { error: output.errorDetail });
       return true;
     }
 
-    transitionRun(run.id, 'failed', { error: 'container error' });
+    // Grace window: the container may have sent a message via IPC (send_message
+    // MCP tool) just before crashing.  The IPC watcher polls on a 1s interval,
+    // so we wait slightly longer than one poll cycle for a delivery ack keyed
+    // by this run's ID before deciding to roll back.
+    await new Promise((resolve) =>
+      setTimeout(resolve, IPC_POLL_INTERVAL + 200),
+    );
+
+    if (wasDelivered(run.id)) {
+      logger.warn(
+        { group: group.name, runId: run.id },
+        'IPC delivery detected during grace window, skipping cursor rollback',
+      );
+      clearDeliveryAck(run.id);
+      transitionRun(run.id, 'acked', {
+        error: output.errorDetail,
+        ipc_delivered: 1,
+      });
+      return true;
+    }
+
+    transitionRun(run.id, 'failed', {
+      error: output.errorDetail || 'container error',
+    });
 
     // If this is already a retry (retryCount >= 1), the same messages caused
     // the previous failure too.  Advancing the cursor skips the problematic
@@ -587,7 +612,7 @@ async function runAgent(
   chatJid: string,
   images: Array<{ base64: string; media_type: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<'success' | 'error'> {
+): Promise<{ status: 'success' | 'error'; errorDetail?: string }> {
   const isMain = group.isMain === true;
   let sessionId: string | undefined = sessions[group.folder];
 
@@ -683,13 +708,16 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
-      return 'error';
+      return { status: 'error', errorDetail: output.error };
     }
 
-    return 'success';
+    return { status: 'success' };
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
-    return 'error';
+    return {
+      status: 'error',
+      errorDetail: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 

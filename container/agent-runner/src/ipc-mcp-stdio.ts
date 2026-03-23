@@ -38,17 +38,20 @@ function writeIpcFile(dir: string, data: object): string {
  * Read the last message ID from the reply context file.
  * Written by the host when messages are sent to the container.
  */
-function getReplyToMessageId(): string | undefined {
+function getReplyContext(): { lastMessageId?: string; runId?: string } {
   try {
     const contextFile = path.join(IPC_DIR, 'reply_context.json');
     if (fs.existsSync(contextFile)) {
       const data = JSON.parse(fs.readFileSync(contextFile, 'utf-8'));
-      return data.lastMessageId || undefined;
+      return {
+        lastMessageId: data.lastMessageId || undefined,
+        runId: data.runId || undefined,
+      };
     }
   } catch {
     // Ignore errors reading context
   }
-  return undefined;
+  return {};
 }
 
 const server = new McpServer({
@@ -98,7 +101,7 @@ server.tool(
       }
     }
 
-    const replyToMessageId = getReplyToMessageId();
+    const { lastMessageId: replyToMessageId, runId } = getReplyContext();
     const data: Record<string, unknown> = {
       type: 'message',
       chatJid,
@@ -106,6 +109,7 @@ server.tool(
       sender: args.sender || undefined,
       groupFolder,
       replyToMessageId,
+      runId,
       timestamp: new Date().toISOString(),
     };
 

@@ -14,6 +14,7 @@ import type { ButtonRows } from './types.js';
 import { handleXIpc } from './x-ipc.js';
 import { handleOpIpc } from './op-ipc.js';
 import { handleCodexIpc } from './codex-ipc.js';
+import { recordDeliveryAck } from './delivery-ack.js';
 import type { QueueStatusEntry, QueueMetrics } from './container-runner.js';
 
 export interface IpcDeps {
@@ -149,6 +150,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     { chatJid: data.chatJid, sourceGroup, sender: data.sender },
                     'IPC message sent',
                   );
+                  if (data.runId) {
+                    recordDeliveryAck(data.runId as string);
+                  }
                 } else {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },

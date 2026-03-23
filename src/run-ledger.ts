@@ -27,6 +27,11 @@ export interface RunEntry {
   max_retries: number;
   created_at: string;
   updated_at: string;
+  stderr_excerpt: string | null;
+  exit_code: number | null;
+  duration_ms: number | null;
+  log_file: string | null;
+  ipc_delivered: number;
 }
 
 const MAX_PAYLOAD_LENGTH = 4096;
@@ -83,13 +88,26 @@ export function createRun(
     max_retries: maxRetries,
     created_at: now,
     updated_at: now,
+    stderr_excerpt: null,
+    exit_code: null,
+    duration_ms: null,
+    log_file: null,
+    ipc_delivered: 0,
   };
 }
 
 export function transitionRun(
   id: string,
   newStatus: RunStatus,
-  updates?: { result?: string; error?: string },
+  updates?: {
+    result?: string;
+    error?: string;
+    stderr_excerpt?: string;
+    exit_code?: number;
+    duration_ms?: number;
+    log_file?: string;
+    ipc_delivered?: number;
+  },
 ): RunEntry | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM run_ledger WHERE id = ?').get(id) as
@@ -125,10 +143,26 @@ export function transitionRun(
   const now = new Date().toISOString();
   const result = updates?.result ?? row.result;
   const error = updates?.error ?? row.error;
+  const stderrExcerpt = updates?.stderr_excerpt ?? row.stderr_excerpt;
+  const exitCode = updates?.exit_code ?? row.exit_code;
+  const durationMs = updates?.duration_ms ?? row.duration_ms;
+  const logFile = updates?.log_file ?? row.log_file;
+  const ipcDelivered = updates?.ipc_delivered ?? row.ipc_delivered;
 
   db.prepare(
-    `UPDATE run_ledger SET status = ?, result = ?, error = ?, updated_at = ? WHERE id = ?`,
-  ).run(finalStatus, result, error, now, id);
+    `UPDATE run_ledger SET status = ?, result = ?, error = ?, stderr_excerpt = ?, exit_code = ?, duration_ms = ?, log_file = ?, ipc_delivered = ?, updated_at = ? WHERE id = ?`,
+  ).run(
+    finalStatus,
+    result,
+    error,
+    stderrExcerpt,
+    exitCode,
+    durationMs,
+    logFile,
+    ipcDelivered,
+    now,
+    id,
+  );
 
   logger.debug(
     { runId: id, from: currentStatus, to: finalStatus },
@@ -140,6 +174,11 @@ export function transitionRun(
     status: finalStatus,
     result,
     error,
+    stderr_excerpt: stderrExcerpt,
+    exit_code: exitCode,
+    duration_ms: durationMs,
+    log_file: logFile,
+    ipc_delivered: ipcDelivered,
     updated_at: now,
   };
 }
@@ -241,4 +280,32 @@ export function pruneOldRuns(olderThanDays: number = 7): number {
     .run(cutoff);
 
   return result.changes;
+}
+
+export function getRecentErrors(limit: number = 20): RunEntry[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT * FROM run_ledger
+       WHERE error IS NOT NULL OR exit_code IS NOT NULL
+       ORDER BY updated_at DESC
+       LIMIT ?`,
+    )
+    .all(limit) as RunEntry[];
+}
+
+export function getErrorsByGroup(
+  groupFolder: string,
+  limit: number = 20,
+): RunEntry[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT * FROM run_ledger
+       WHERE (error IS NOT NULL OR exit_code IS NOT NULL)
+         AND group_folder = ?
+       ORDER BY updated_at DESC
+       LIMIT ?`,
+    )
+    .all(groupFolder, limit) as RunEntry[];
 }
