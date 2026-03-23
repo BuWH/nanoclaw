@@ -9,14 +9,17 @@ store/
 data/
 logs/
 
-# Groups - only track base structure and specific CLAUDE.md files
+# Groups - only track CLAUDE.md for each group
 groups/*
 !groups/main/
 !groups/global/
+!groups/telegram_fripp/
 groups/main/*
 groups/global/*
+groups/telegram_fripp/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
+!groups/telegram_fripp/CLAUDE.md
 
 # Secrets
 *.keys.json
