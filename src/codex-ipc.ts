@@ -8,7 +8,7 @@
  * comments, so there is no privilege escalation risk.
  *
  * Security:
- * - Codex runs in --full-auto sandbox (workspace-write, approval on-failure)
+ * - Codex runs in danger-full-access sandbox (network needed for gh pr review)
  * - Repo cloned to /tmp/ (isolated from NanoClaw source)
  */
 
@@ -209,7 +209,12 @@ async function runCodexReview(
         'exec',
         '-m',
         CODEX_MODEL,
-        '--full-auto',
+        // Network access is required for `gh pr review` to post comments.
+        // --full-auto uses workspace-write sandbox which blocks outbound
+        // connections.  The repo is already cloned to an isolated /tmp/ dir
+        // so full-access is safe here.
+        '--sandbox',
+        'danger-full-access',
         '--output-last-message',
         resultFile,
         '-C',
