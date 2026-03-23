@@ -50,6 +50,8 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  /** Host-side run ID for IPC delivery correlation */
+  runId?: string;
   /** Base64-encoded images to include with the prompt */
   images?: Array<{ base64: string; media_type: string }>;
 }

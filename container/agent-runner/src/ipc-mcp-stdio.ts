@@ -19,6 +19,8 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+// Per-run correlation ID injected via stdin → env to avoid shared-file races
+const envRunId = process.env.NANOCLAW_RUN_ID;
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -101,7 +103,7 @@ server.tool(
       }
     }
 
-    const { lastMessageId: replyToMessageId, runId } = getReplyContext();
+    const { lastMessageId: replyToMessageId, runId: fileRunId } = getReplyContext();
     const data: Record<string, unknown> = {
       type: 'message',
       chatJid,
@@ -109,7 +111,9 @@ server.tool(
       sender: args.sender || undefined,
       groupFolder,
       replyToMessageId,
-      runId,
+      // Prefer env var (injected via stdin -> agent-runner -> env) over shared
+      // reply_context.json which can be clobbered by concurrent task lanes.
+      runId: envRunId || fileRunId || undefined,
       timestamp: new Date().toISOString(),
     };
 

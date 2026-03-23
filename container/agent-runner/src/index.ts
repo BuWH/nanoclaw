@@ -29,6 +29,8 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  /** Host-side run ID for IPC delivery correlation */
+  runId?: string;
   /** Base64-encoded images to include with the initial prompt */
   images?: Array<{ base64: string; media_type: string }>;
 }
@@ -440,6 +442,9 @@ async function runQuery(
         NANOCLAW_CHAT_JID: containerInput.chatJid,
         NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
         NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+        ...(containerInput.runId
+          ? { NANOCLAW_RUN_ID: containerInput.runId }
+          : {}),
       },
     },
   };

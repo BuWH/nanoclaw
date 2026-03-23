@@ -533,6 +533,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         hadError = true;
       }
     },
+    run.id,
   );
 
   await channel.setTyping?.(chatJid, false);
@@ -547,6 +548,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
       transitionRun(run.id, 'acked', { error: output.errorDetail });
+      clearDeliveryAck(run.id);
       return true;
     }
 
@@ -602,6 +604,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
+  clearDeliveryAck(run.id);
   transitionRun(run.id, 'acked');
   return true;
 }
@@ -612,6 +615,7 @@ async function runAgent(
   chatJid: string,
   images: Array<{ base64: string; media_type: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  runId?: string,
 ): Promise<{ status: 'success' | 'error'; errorDetail?: string }> {
   const isMain = group.isMain === true;
   let sessionId: string | undefined = sessions[group.folder];
@@ -686,6 +690,7 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
         images: images.length > 0 ? images : undefined,
+        runId,
       },
       (proc, containerName) =>
         queue.registerProcess(
