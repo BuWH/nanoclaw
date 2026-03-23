@@ -557,6 +557,16 @@ export class TelegramChannel implements Channel {
         }
       }
 
+      // When the user replies to a message, prepend the quoted message as
+      // context so the agent knows what the user is referring to.
+      const reply = ctx.message.reply_to_message;
+      if (reply) {
+        const replyText = reply.text || reply.caption || '[non-text message]';
+        const replyFrom =
+          reply.from?.first_name || reply.from?.username || 'Unknown';
+        content = `[Replying to ${replyFrom}: "${replyText}"]\n${content}`;
+      }
+
       // Store chat metadata for discovery
       this.opts.onChatMetadata(chatJid, timestamp, chatName);
 

@@ -7,8 +7,26 @@ import { computeChangelog } from './auto-update.js';
 
 const projectRoot = process.cwd();
 
+/** Number of commits reachable from HEAD — may be limited in CI shallow clones. */
+function commitDepth(): number {
+  try {
+    return parseInt(
+      execSync('git rev-list --count HEAD', {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+      }).trim(),
+      10,
+    );
+  } catch {
+    return 0;
+  }
+}
+
 describe('computeChangelog', () => {
   it('returns bullet-pointed subjects for a real commit range', () => {
+    const depth = commitDepth();
+    if (depth < 4) return; // shallow clone — skip
+
     const from = execSync('git rev-parse HEAD~3', {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -45,6 +63,9 @@ describe('computeChangelog', () => {
   });
 
   it('strips conventional commit prefixes', () => {
+    const depth = commitDepth();
+    if (depth < 6) return; // shallow clone — skip
+
     const from = execSync('git rev-parse HEAD~5', {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -90,6 +111,9 @@ describe('pre-update HEAD marker flow', () => {
   });
 
   it('full startup flow: reads marker, computes changelog, records announcement', () => {
+    const depth = commitDepth();
+    if (depth < 4) return; // shallow clone — skip
+
     const markerPath = path.join(dataDir, '.pre-update-head');
     const announcedPath = path.join(dataDir, '.last-announced-head');
 
@@ -124,6 +148,9 @@ describe('pre-update HEAD marker flow', () => {
   });
 
   it('skips changelog when already announced', () => {
+    const depth = commitDepth();
+    if (depth < 4) return; // shallow clone — skip
+
     const announcedPath = path.join(dataDir, '.last-announced-head');
     const currentHead = execSync('git rev-parse HEAD', {
       cwd: projectRoot,
