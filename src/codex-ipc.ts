@@ -144,9 +144,21 @@ async function prepareRepo(
     return { error: `Failed to clone ${owner}/${repo}: ${clone.stderr}` };
   }
 
+  // --repo is required: `gh repo clone` for a fork adds an `upstream`
+  // remote pointing to the parent repo.  Without --repo, `gh pr checkout`
+  // resolves the PR number against the *upstream* repo, not the fork,
+  // which causes a "couldn't find remote ref" error when the PR numbers
+  // differ between the two repos.
   const checkout = await execCommand(
     'gh',
-    ['pr', 'checkout', String(prNumber), '--force'],
+    [
+      'pr',
+      'checkout',
+      String(prNumber),
+      '--force',
+      '--repo',
+      `${owner}/${repo}`,
+    ],
     { cwd: repoDir },
   );
   if (checkout.code !== 0) {
