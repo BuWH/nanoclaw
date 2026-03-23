@@ -13,6 +13,7 @@ import { RegisteredGroup } from './types.js';
 import type { ButtonRows } from './types.js';
 import { handleXIpc } from './x-ipc.js';
 import { handleOpIpc } from './op-ipc.js';
+import { handleChromeIpc } from './chrome-ipc.js';
 import { handleCodexIpc } from './codex-ipc.js';
 import { recordDeliveryAck } from './delivery-ack.js';
 import type { QueueStatusEntry, QueueMetrics } from './container-runner.js';
@@ -225,6 +226,22 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     logger.error(
                       { file, sourceGroup, err },
                       'Background 1Password IPC handler error',
+                    );
+                  },
+                );
+                continue;
+              }
+
+              // Chrome cookie export requests: fire-and-forget pattern.
+              // Exports host Chrome cookies to browser-state/storage.json.
+              // Results are written to chrome_results/ for the container to poll.
+              if (type?.startsWith('chrome_')) {
+                fs.unlinkSync(filePath);
+                handleChromeIpc(data, sourceGroup, isMain, DATA_DIR).catch(
+                  (err) => {
+                    logger.error(
+                      { file, sourceGroup, err },
+                      'Background Chrome IPC handler error',
                     );
                   },
                 );

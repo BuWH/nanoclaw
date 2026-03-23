@@ -52,6 +52,16 @@ browser-agent run --storage-state auth.json "check my account"
 
 Browser cookies and localStorage are automatically loaded from `/workspace/browser-state/storage.json` if it exists. Main group can write to this; other groups have read-only access.
 
+### Import cookies from host Chrome (main group only)
+
+```bash
+browser-agent import-cookies                                  # Import all Chrome cookies
+browser-agent import-cookies --domains github.com,notion.so   # Import specific domains only
+browser-agent import-cookies --profile "Profile 1"            # Use a specific Chrome profile
+```
+
+Reads the host machine's Chrome cookie database via IPC and writes to the shared browser-state directory. The next `run` or `screenshot` command will automatically use the imported cookies. Useful for accessing sites where the user is already logged in on Chrome.
+
 ### 1Password credentials (main group only)
 
 ```bash

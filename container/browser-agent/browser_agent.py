@@ -5,9 +5,10 @@ Uses browser-use library with pure CDP (Chrome DevTools Protocol) to drive
 Chromium autonomously. The LLM sees page state and decides actions.
 
 Commands:
-    run           Execute a browser task using AI
-    screenshot    Take a screenshot of the current page
+    run            Execute a browser task using AI
+    screenshot     Take a screenshot of the current page
     export-storage Export browser cookies/localStorage
+    import-cookies Import cookies from host Chrome via IPC
     get-credential Fetch a credential from 1Password via IPC
 """
 
@@ -21,7 +22,7 @@ import click
 
 STORAGE_STATE_PATH = "/workspace/browser-state/storage.json"
 IPC_TASKS_DIR = "/workspace/ipc/tasks"
-IPC_OP_RESULTS_DIR = "/workspace/ipc/op_results"
+IPC_RESULTS_BASE = "/workspace/ipc"
 
 
 @click.group()
@@ -246,14 +247,26 @@ def get_credential(item_name, field, otp):
 
 def _get_credential_sync(item_name, field=None, otp=False):
     """Write IPC request to tasks dir, poll op_results dir for response."""
-    request_id = f"{int(time.time() * 1000)}-{os.getpid()}"
     request = {
         "type": "op_get_otp" if otp else "op_get_item",
-        "requestId": request_id,
         "itemName": item_name,
     }
     if field:
         request["field"] = field
+    return _ipc_request_sync(request, "op_results", timeout=60)
+
+
+def _ipc_request_sync(request, results_subdir, timeout=60):
+    """Generic IPC request: write to tasks dir, poll results dir for response.
+
+    Args:
+        request: Dict with at least a "type" field. A "requestId" will be added.
+        results_subdir: Subdirectory under /workspace/ipc/ to poll for results
+                        (e.g. "op_results", "chrome_results").
+        timeout: Seconds to wait for a response before giving up.
+    """
+    request_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+    request["requestId"] = request_id
 
     # Write IPC request (atomic rename to prevent partial reads)
     os.makedirs(IPC_TASKS_DIR, exist_ok=True)
@@ -265,8 +278,9 @@ def _get_credential_sync(item_name, field=None, otp=False):
     os.rename(tmp_path, final_path)
 
     # Poll for result
-    result_path = os.path.join(IPC_OP_RESULTS_DIR, f"{request_id}.json")
-    for _ in range(60):  # 60s timeout
+    results_dir = os.path.join(IPC_RESULTS_BASE, results_subdir)
+    result_path = os.path.join(results_dir, f"{request_id}.json")
+    for _ in range(timeout):
         if os.path.exists(result_path):
             try:
                 with open(result_path) as f:
@@ -277,7 +291,40 @@ def _get_credential_sync(item_name, field=None, otp=False):
                 return {"success": False, "message": f"Failed to read result: {e}"}
         time.sleep(1)
 
-    return {"success": False, "message": "Timeout waiting for 1Password result (60s)"}
+    return {"success": False, "message": f"Timeout waiting for IPC result ({timeout}s)"}
+
+
+@cli.command("import-cookies")
+@click.option(
+    "--domains",
+    default=None,
+    help="Comma-separated domains to export (e.g. github.com,google.com)",
+)
+@click.option(
+    "--profile",
+    default=None,
+    help='Chrome profile directory name (e.g. "Default", "Profile 1")',
+)
+def import_cookies(domains, profile):
+    """Import cookies from host Chrome into browser storage state (main group only).
+
+    Sends an IPC request to the host to read Chrome's cookie database and
+    write the cookies to the shared browser-state directory. The next
+    browser-agent run/screenshot command will automatically use them.
+
+    Examples:
+        browser-agent import-cookies
+        browser-agent import-cookies --domains github.com,notion.so
+        browser-agent import-cookies --profile "Profile 1"
+    """
+    request = {"type": "chrome_export_cookies"}
+    if domains:
+        request["domains"] = domains
+    if profile:
+        request["profile"] = profile
+
+    result = _ipc_request_sync(request, "chrome_results", timeout=30)
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

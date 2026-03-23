@@ -39,6 +39,7 @@ Tests module interactions with real SQLite DB or multi-module coordination.
 | routing.test.ts | routing.ts + db.ts | 14 | JID ownership patterns (WhatsApp, Telegram), group listing, registration marking, mixed-platform ordering |
 | credential-proxy.test.ts | credential-proxy.ts | 5 | API-key injection, OAuth replacement, hop-by-hop header stripping, upstream error handling |
 | op-ipc.test.ts | op-ipc.ts | 11 | 1Password IPC: get_item, get_otp, field filtering, error handling, non-main group blocking |
+| chrome-ipc.test.ts | chrome-ipc.ts | 10 | Chrome cookie IPC: uv availability check, script path validation, cookie export, domain/profile passthrough, error handling, non-main group blocking |
 | x-ipc.test.ts | x-ipc.ts | 37 | X/Twitter IPC: script spawning, process group kill, JSON parsing, tweet cache CRUD/TTL/pruning |
 | x-health.test.ts | x-health.ts | 26 | Health check, version detection, auto-update flow, interval scheduling |
 | remote-control.test.ts | remote-control.ts | 17 | Session spawning, file descriptor management, state persistence, restore/stop lifecycle |
