@@ -547,7 +547,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
-      transitionRun(run.id, 'acked', { error: output.errorDetail });
+      transitionRun(run.id, 'acked', {
+        error: output.errorDetail,
+        exit_code: output.exitCode,
+        duration_ms: output.durationMs,
+        stderr_excerpt: output.stderrTail,
+        log_file: output.logFile,
+      });
       clearDeliveryAck(run.id);
       return true;
     }
@@ -569,12 +575,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       transitionRun(run.id, 'acked', {
         error: output.errorDetail,
         ipc_delivered: 1,
+        exit_code: output.exitCode,
+        duration_ms: output.durationMs,
+        stderr_excerpt: output.stderrTail,
+        log_file: output.logFile,
       });
       return true;
     }
 
     transitionRun(run.id, 'failed', {
       error: output.errorDetail || 'container error',
+      exit_code: output.exitCode,
+      duration_ms: output.durationMs,
+      stderr_excerpt: output.stderrTail,
+      log_file: output.logFile,
     });
 
     // If this is already a retry (retryCount >= 1), the same messages caused
@@ -616,7 +630,14 @@ async function runAgent(
   images: Array<{ base64: string; media_type: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   runId?: string,
-): Promise<{ status: 'success' | 'error'; errorDetail?: string }> {
+): Promise<{
+  status: 'success' | 'error';
+  errorDetail?: string;
+  exitCode?: number;
+  durationMs?: number;
+  stderrTail?: string;
+  logFile?: string;
+}> {
   const isMain = group.isMain === true;
   let sessionId: string | undefined = sessions[group.folder];
 
@@ -713,7 +734,14 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
-      return { status: 'error', errorDetail: output.error };
+      return {
+        status: 'error',
+        errorDetail: output.error,
+        exitCode: output.exitCode,
+        durationMs: output.durationMs,
+        stderrTail: output.stderrTail,
+        logFile: output.logFile,
+      };
     }
 
     return { status: 'success' };

@@ -61,6 +61,14 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  /** Container exit code (e.g. 137 = OOM kill). */
+  exitCode?: number;
+  /** Container run duration in milliseconds. */
+  durationMs?: number;
+  /** Tail of stderr (last ~1000 chars). */
+  stderrTail?: string;
+  /** Path to the full container log file on the host. */
+  logFile?: string;
   /**
    * When true, this output is a pre-spawn informational warning (e.g. large session).
    * Consumers should send it to the user but NOT treat it as a real agent result —
@@ -746,6 +754,10 @@ export async function runContainerAgent(
           status: 'error',
           result: null,
           error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
+          exitCode: code ?? undefined,
+          durationMs: duration,
+          stderrTail: stderr.slice(-1000),
+          logFile,
         });
         return;
       }
