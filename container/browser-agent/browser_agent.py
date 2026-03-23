@@ -76,7 +76,7 @@ async def _run(
     use_vision,
 ):
     from browser_use import Agent, Browser
-    from langchain_openai import ChatOpenAI
+    from browser_use.llm.openai.like import ChatOpenAILike
 
     browser_kwargs = {
         "headless": True,
@@ -101,8 +101,10 @@ async def _run(
 
     browser = Browser(**browser_kwargs)
 
-    # LiteLLM provides OpenAI-compatible API for all models including Claude
-    llm = ChatOpenAI(
+    # browser-use 0.12+ has its own ChatOpenAI/ChatOpenAILike classes that
+    # implement the BaseChatModel protocol (with .provider property).
+    # ChatOpenAILike is designed for OpenAI-compatible endpoints like LiteLLM.
+    llm = ChatOpenAILike(
         model=model_override
         or os.environ.get("BROWSER_LLM_MODEL", "claude-sonnet-4.6"),
         api_key=os.environ.get("BROWSER_LLM_API_KEY", "sk-local"),
@@ -135,7 +137,7 @@ async def _run(
     except Exception as e:
         output = {"success": False, "result": None, "error": str(e)}
     finally:
-        await browser.close()
+        await browser.stop()
 
     print(json.dumps(output))
 
@@ -186,7 +188,7 @@ async def _screenshot(output_path):
     except Exception as e:
         print(json.dumps({"success": False, "error": str(e)}))
     finally:
-        await browser.close()
+        await browser.stop()
 
 
 @cli.command("export-storage")
@@ -220,7 +222,7 @@ async def _export_storage(output_path):
     except Exception as e:
         print(json.dumps({"success": False, "error": str(e)}))
     finally:
-        await browser.close()
+        await browser.stop()
 
 
 @cli.command("get-credential")
