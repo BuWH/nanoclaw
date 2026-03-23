@@ -127,8 +127,34 @@ def export_cookies(domains=None, profile=None):
 
 
 def write_storage_state(cookies, output_path):
-    """Write Playwright storage_state JSON atomically."""
-    storage_state = {"cookies": cookies, "origins": []}
+    """Merge cookies into existing storage_state JSON and write atomically.
+
+    Preserves existing origins (localStorage) and cookies for domains not
+    covered by the new import. New cookies overwrite existing ones with the
+    same (name, domain, path) tuple.
+    """
+    existing = {"cookies": [], "origins": []}
+    if os.path.exists(output_path):
+        try:
+            with open(output_path) as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass  # Corrupted file -- start fresh
+
+    # Index new cookies by (name, domain, path) for O(1) lookup
+    new_index = {(c["name"], c["domain"], c["path"]): c for c in cookies}
+
+    # Build merged cookie list: keep existing cookies not replaced by new ones
+    merged = list(new_index.values())
+    for ec in existing.get("cookies", []):
+        key = (ec.get("name"), ec.get("domain"), ec.get("path"))
+        if key not in new_index:
+            merged.append(ec)
+
+    storage_state = {
+        "cookies": merged,
+        "origins": existing.get("origins", []),
+    }
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 

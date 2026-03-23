@@ -12,11 +12,21 @@
  * - Output is written to the shared browser-state directory
  */
 
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import { logger } from './logger.js';
+
+/** Check whether `uv` is available on the host PATH. */
+function uvAvailable(): boolean {
+  try {
+    execFileSync('uv', ['--version'], { timeout: 5_000, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface ChromeResult {
   success: boolean;
@@ -43,6 +53,14 @@ async function exportCookies(
   domains?: string,
   profile?: string,
 ): Promise<ChromeResult> {
+  if (!uvAvailable()) {
+    return {
+      success: false,
+      message:
+        'uv is not installed on the host. Install it: curl -LsSf https://astral.sh/uv/install.sh | sh',
+    };
+  }
+
   // Resolve the Python script path relative to the project root.
   // dataDir is typically <project>/data, so the project root is one level up.
   const projectRoot = path.resolve(dataDir, '..');
