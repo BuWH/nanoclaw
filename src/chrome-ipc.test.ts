@@ -34,22 +34,29 @@ import { handleChromeIpc } from './chrome-ipc.js';
 // ---------------------------------------------------------------------------
 
 describe('handleChromeIpc', () => {
+  /** Isolated project root so sibling `tools/` dir cannot leak across tests. */
+  let projectRoot: string;
   let dataDir: string;
 
   beforeEach(() => {
-    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-ipc-test-'));
+    // Create a unique project root with a nested `data` subdirectory.
+    // chrome-ipc.ts resolves the project root as `path.resolve(dataDir, '..')`,
+    // so `projectRoot/data` ensures the `tools/` sibling stays isolated.
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'chrome-ipc-test-'));
+    dataDir = path.join(projectRoot, 'data');
+    fs.mkdirSync(dataDir, { recursive: true });
     vi.clearAllMocks();
     // By default, uv is available
     mockExecFileSync.mockReturnValue(Buffer.from('uv 0.6.0'));
   });
 
   afterEach(() => {
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
   /** Helper: create the tools/ directory so the script path check passes. */
   function setupScriptPath(): void {
-    const toolsDir = path.join(dataDir, '..', 'tools');
+    const toolsDir = path.join(projectRoot, 'tools');
     fs.mkdirSync(toolsDir, { recursive: true });
     fs.writeFileSync(
       path.join(toolsDir, 'export-chrome-cookies.py'),

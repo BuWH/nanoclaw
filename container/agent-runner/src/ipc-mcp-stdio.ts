@@ -577,7 +577,71 @@ Use this to check if a background task is still running, or to see the overall s
   },
 );
 
-// Start the stdio transport
+// --- Chrome Cookie Import Tool (main group only) ---
+
+const CHROME_RESULTS_DIR = path.join(IPC_DIR, 'chrome_results');
+
+async function waitForChromeResult(requestId: string, maxWait = 30000): Promise<{ success: boolean; message: string; data?: unknown }> {
+  const resultFile = path.join(CHROME_RESULTS_DIR, `${requestId}.json`);
+  const pollInterval = 1000;
+  let elapsed = 0;
+
+  while (elapsed < maxWait) {
+    if (fs.existsSync(resultFile)) {
+      try {
+        const result = JSON.parse(fs.readFileSync(resultFile, 'utf-8'));
+        fs.unlinkSync(resultFile);
+        return result;
+      } catch (err) {
+        return { success: false, message: `Failed to read result: ${err}` };
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+    elapsed += pollInterval;
+  }
+
+  return { success: false, message: 'Cookie import request timed out' };
+}
+
+if (isMain) {
+  server.tool(
+    'import_cookies',
+    `Import cookies from the host machine's Chrome browser into browser storage state.
+This allows browser-agent to use authenticated sessions from your Chrome browser.
+After importing, the next browser-agent run/screenshot will automatically use the cookies.
+
+Main group only. The cookies are exported from Chrome's local cookie database (read-only).
+
+Use this when:
+- You need to access authenticated pages (e.g., GitHub, Notion, Google)
+- The user asks you to log into a site using their existing Chrome session
+- Before running browser-agent on sites that require authentication`,
+    {
+      domains: z.string().optional().describe('Comma-separated domains to export (e.g. "github.com,notion.so"). If omitted, exports all cookies.'),
+      profile: z.string().optional().describe('Chrome profile directory name (e.g. "Default", "Profile 1"). Defaults to the default profile.'),
+    },
+    async (args) => {
+      const requestId = `chrome-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      writeIpcFile(TASKS_DIR, {
+        type: 'chrome_export_cookies',
+        requestId,
+        domains: args.domains || undefined,
+        profile: args.profile || undefined,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const result = await waitForChromeResult(requestId, 30000);
+      return {
+        content: [{ type: 'text' as const, text: result.success
+          ? `Cookies imported successfully. ${result.message}${result.data ? `\nDetails: ${JSON.stringify(result.data)}` : ''}`
+          : `Cookie import failed: ${result.message}` }],
+        isError: !result.success,
+      };
+    },
+  );
+}
+
 // --- X Integration Tools (main group only) ---
 
 const X_RESULTS_DIR = path.join(IPC_DIR, 'x_results');
