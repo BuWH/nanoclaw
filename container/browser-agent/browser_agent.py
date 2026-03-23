@@ -137,7 +137,7 @@ async def _run(
     except Exception as e:
         output = {"success": False, "result": None, "error": str(e)}
     finally:
-        await browser.close()
+        await browser.stop()
 
     print(json.dumps(output))
 
@@ -188,7 +188,7 @@ async def _screenshot(output_path):
     except Exception as e:
         print(json.dumps({"success": False, "error": str(e)}))
     finally:
-        await browser.close()
+        await browser.stop()
 
 
 @cli.command("export-storage")
@@ -222,7 +222,7 @@ async def _export_storage(output_path):
     except Exception as e:
         print(json.dumps({"success": False, "error": str(e)}))
     finally:
-        await browser.close()
+        await browser.stop()
 
 
 @cli.command("get-credential")
