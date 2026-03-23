@@ -107,6 +107,8 @@ let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
+/** Pre-pipe cursor per chat: saved before the first IPC pipe so we can roll back if the container crashes. */
+const prePipeCursors = new Map<string, string>();
 let messageLoopRunning = false;
 let lastMessageLoopTick = 0;
 const startTime = Date.now();
@@ -544,6 +546,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output.status === 'error' || hadError) {
+    // Roll back piped message cursor if messages were piped to this container
+    // via IPC (startMessageLoop) after it was spawned. Those messages were
+    // never processed because the container crashed.
+    const pipedCursor = prePipeCursors.get(chatJid);
+    if (pipedCursor !== undefined) {
+      logger.warn(
+        { group: group.name, chatJid, rolledBackTo: pipedCursor },
+        'Rolled back piped message cursor after container crash',
+      );
+      lastAgentTimestamp[chatJid] = pipedCursor;
+      saveState();
+      prePipeCursors.delete(chatJid);
+    }
+
+    // Notify the user that the agent crashed
+    const exitInfo = output.exitCode ? ` (exit ${output.exitCode})` : '';
+    const hasPipedMessages = pipedCursor !== undefined;
+    const crashMsg = hasPipedMessages
+      ? `[System] Agent crashed${exitInfo}. Retrying your piped messages...`
+      : `[System] Agent crashed${exitInfo}.`;
+    channel
+      .sendMessage(chatJid, crashMsg, lastMessageId)
+      .catch((err) =>
+        logger.warn({ chatJid, err }, 'Failed to send crash notification'),
+      );
+
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -649,6 +677,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   clearDeliveryAck(run.id);
+  prePipeCursors.delete(chatJid);
   transitionRun(run.id, 'acked');
   return true;
 }
@@ -864,6 +893,16 @@ async function startMessageLoop(): Promise<void> {
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
             );
+            // Save pre-pipe cursor on the first pipe so we can roll back
+            // if the container crashes before processing these messages.
+            if (!prePipeCursors.has(chatJid)) {
+              const currentCursor = lastAgentTimestamp[chatJid] || '';
+              prePipeCursors.set(chatJid, currentCursor);
+              logger.debug(
+                { chatJid, prePipeCursor: currentCursor },
+                'Saved pre-pipe cursor for crash recovery',
+              );
+            }
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
