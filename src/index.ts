@@ -523,6 +523,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           if (!result.isWarning) {
             outputSentToUser = true;
             transitionRun(run.id, 'reply_sent');
+            // Advance pre-pipe checkpoint: the container just sent a reply,
+            // so any piped messages up to the current cursor are now handled.
+            // If the container crashes later after receiving *new* piped
+            // messages, we only roll back to this point, not all the way
+            // back to the first pipe.
+            if (prePipeCursors.has(chatJid)) {
+              prePipeCursors.set(chatJid, lastAgentTimestamp[chatJid] || '');
+            }
           }
         }
         // Only reset idle timer on actual results, not warnings or session-update markers
@@ -546,23 +554,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output.status === 'error' || hadError) {
-    // Roll back piped message cursor if messages were piped to this container
-    // via IPC (startMessageLoop) after it was spawned. Those messages were
-    // never processed because the container crashed.
     const pipedCursor = prePipeCursors.get(chatJid);
-    if (pipedCursor !== undefined) {
-      logger.warn(
-        { group: group.name, chatJid, rolledBackTo: pipedCursor },
-        'Rolled back piped message cursor after container crash',
-      );
-      lastAgentTimestamp[chatJid] = pipedCursor;
-      saveState();
-      prePipeCursors.delete(chatJid);
-    }
+    const hasPipedMessages = pipedCursor !== undefined;
 
     // Notify the user that the agent crashed
     const exitInfo = output.exitCode ? ` (exit ${output.exitCode})` : '';
-    const hasPipedMessages = pipedCursor !== undefined;
     const crashMsg = hasPipedMessages
       ? `[System] Agent crashed${exitInfo}. Retrying your piped messages...`
       : `[System] Agent crashed${exitInfo}.`;
@@ -572,8 +568,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         logger.warn({ chatJid, err }, 'Failed to send crash notification'),
       );
 
-    // If we already sent output to the user, don't roll back the cursor —
-    // the user got their response and re-processing would send duplicates.
+    // If we already sent output to the user, don't roll back the original
+    // batch cursor — the user got their response and re-processing would
+    // send duplicates.  However, piped messages that arrived after the
+    // response may still need rollback (handled below).
     if (outputSentToUser) {
       logger.warn(
         { group: group.name },
@@ -587,6 +585,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         log_file: output.logFile,
       });
       clearDeliveryAck(run.id);
+      // Roll back piped messages that arrived after the original response
+      if (hasPipedMessages) {
+        logger.warn(
+          { group: group.name, chatJid, rolledBackTo: pipedCursor },
+          'Rolled back piped message cursor after container crash (output was sent for original batch)',
+        );
+        lastAgentTimestamp[chatJid] = pipedCursor;
+        saveState();
+        prePipeCursors.delete(chatJid);
+      }
       return true;
     }
 
@@ -618,6 +626,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         stderr_excerpt: output.stderrTail,
         log_file: output.logFile,
       });
+      // IPC delivery confirmed — piped messages were handled by the container
+      prePipeCursors.delete(chatJid);
       return true;
     }
 
@@ -638,6 +648,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         stderr_excerpt: output.stderrTail,
         log_file: output.logFile,
       });
+      // Pending IPC file found — piped messages were handled by the container
+      prePipeCursors.delete(chatJid);
       return true;
     }
 
@@ -663,14 +675,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         error: 'Consecutive failures — messages skipped to break retry loop',
       });
       // Cursor was already advanced before running the agent; just keep it.
+      prePipeCursors.delete(chatJid);
       return true;
     }
 
-    // Roll back cursor so retries can re-process these messages
-    lastAgentTimestamp[chatJid] = previousCursor;
+    // No delivery detected — roll back cursor so retries re-process.
+    // If piped messages exist, roll back to the pre-pipe checkpoint
+    // (covers both original batch and piped messages).
+    // Otherwise roll back to the original batch cursor.
+    const rollbackTarget = hasPipedMessages ? pipedCursor : previousCursor;
+    lastAgentTimestamp[chatJid] = rollbackTarget;
     saveState();
+    prePipeCursors.delete(chatJid);
     logger.warn(
-      { group: group.name },
+      { group: group.name, hasPipedMessages, rolledBackTo: rollbackTarget },
       'Agent error, rolled back message cursor for retry',
     );
     return false;
