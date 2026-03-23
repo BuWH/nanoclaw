@@ -162,6 +162,35 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Add error context columns to run_ledger (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE run_ledger ADD COLUMN stderr_excerpt TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE run_ledger ADD COLUMN exit_code INTEGER`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE run_ledger ADD COLUMN duration_ms INTEGER`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE run_ledger ADD COLUMN log_file TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE run_ledger ADD COLUMN ipc_delivered INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {

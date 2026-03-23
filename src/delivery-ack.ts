@@ -1,0 +1,83 @@
+/**
+ * Per-run IPC delivery tracking.
+ *
+ * When a container agent sends a message via IPC (`send_message`), the IPC
+ * watcher records a delivery acknowledgement keyed by `runId`.
+ * `processGroupMessages` checks this after container errors to decide whether
+ * cursor rollback is safe (i.e. the user already received a response).
+ *
+ * The in-memory Map is the fast path; durable persistence happens in
+ * `run_ledger.ipc_delivered` (managed by the caller).
+ */
+
+import fs from 'fs';
+import path from 'path';
+
+const deliveredRuns = new Map<string, number>();
+
+/** Max age (ms) before a stale delivery record is evicted. */
+const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Evict entries older than MAX_AGE_MS to prevent unbounded growth. */
+function evictStale(): void {
+  const cutoff = Date.now() - MAX_AGE_MS;
+  for (const [runId, ts] of deliveredRuns) {
+    if (ts < cutoff) {
+      deliveredRuns.delete(runId);
+    }
+  }
+}
+
+/** Record that a message was successfully delivered for a given run. */
+export function recordDeliveryAck(runId: string): void {
+  deliveredRuns.set(runId, Date.now());
+  // Lazy eviction: clean up stale entries when the map grows large
+  if (deliveredRuns.size > 100) {
+    evictStale();
+  }
+}
+
+/** Check whether a delivery was recorded for a given run. */
+export function wasDelivered(runId: string): boolean {
+  return deliveredRuns.has(runId);
+}
+
+/** Remove a delivery record after it has been consumed. */
+export function clearDeliveryAck(runId: string): void {
+  deliveredRuns.delete(runId);
+}
+
+/** Visible for testing only — reset all entries. */
+export function _resetForTest(): void {
+  deliveredRuns.clear();
+}
+
+/**
+ * Check the IPC messages directory for pending files that contain a matching runId.
+ * This catches cases where the IPC watcher hasn't processed the file yet
+ * (e.g. slow channel send or backlog).
+ */
+export function checkPendingIpcFiles(ipcDir: string, runId: string): boolean {
+  try {
+    const messagesDir = path.join(ipcDir, 'messages');
+    if (!fs.existsSync(messagesDir)) return false;
+    const files = fs
+      .readdirSync(messagesDir)
+      .filter((f) => f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const data = JSON.parse(
+          fs.readFileSync(path.join(messagesDir, file), 'utf-8'),
+        );
+        if (data.runId === runId && data.type === 'message') {
+          return true;
+        }
+      } catch {
+        // skip malformed files
+      }
+    }
+  } catch {
+    // directory may not exist
+  }
+  return false;
+}

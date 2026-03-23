@@ -19,6 +19,8 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+// Per-run correlation ID injected via stdin → env to avoid shared-file races
+const envRunId = process.env.NANOCLAW_RUN_ID;
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -38,17 +40,20 @@ function writeIpcFile(dir: string, data: object): string {
  * Read the last message ID from the reply context file.
  * Written by the host when messages are sent to the container.
  */
-function getReplyToMessageId(): string | undefined {
+function getReplyContext(): { lastMessageId?: string; runId?: string } {
   try {
     const contextFile = path.join(IPC_DIR, 'reply_context.json');
     if (fs.existsSync(contextFile)) {
       const data = JSON.parse(fs.readFileSync(contextFile, 'utf-8'));
-      return data.lastMessageId || undefined;
+      return {
+        lastMessageId: data.lastMessageId || undefined,
+        runId: data.runId || undefined,
+      };
     }
   } catch {
     // Ignore errors reading context
   }
-  return undefined;
+  return {};
 }
 
 const server = new McpServer({
@@ -98,7 +103,7 @@ server.tool(
       }
     }
 
-    const replyToMessageId = getReplyToMessageId();
+    const { lastMessageId: replyToMessageId, runId: fileRunId } = getReplyContext();
     const data: Record<string, unknown> = {
       type: 'message',
       chatJid,
@@ -106,6 +111,9 @@ server.tool(
       sender: args.sender || undefined,
       groupFolder,
       replyToMessageId,
+      // Prefer env var (injected via stdin -> agent-runner -> env) over shared
+      // reply_context.json which can be clobbered by concurrent task lanes.
+      runId: envRunId || fileRunId || undefined,
       timestamp: new Date().toISOString(),
     };
 
