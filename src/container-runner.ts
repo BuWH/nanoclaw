@@ -331,7 +331,7 @@ function buildContainerArgs(
     `BROWSER_LLM_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:4000/v1`,
   );
   args.push('-e', 'BROWSER_LLM_API_KEY=sk-local');
-  args.push('-e', 'BROWSER_LLM_MODEL=claude-sonnet-4.6');
+  args.push('-e', 'BROWSER_LLM_MODEL=gpt-5.4');
   args.push('-e', 'BROWSER_EXECUTABLE_PATH=/usr/bin/chromium');
 
   // Run as host user so bind-mounted files are accessible.
