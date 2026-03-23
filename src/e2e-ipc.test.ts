@@ -1,15 +1,30 @@
 /**
  * E2E Integration Tests: IPC delivery-ack dedup and error observability.
  *
- * Covers:
- *   - Delivery ack lifecycle (record, check, clear)
+ * Group 1 -- Delivery-ack unit tests:
+ *   - Record / check / clear lifecycle
  *   - TTL eviction under map size threshold
  *   - Wrong-run isolation (no cross-contamination)
- *   - run_ledger error metadata population (stderr_excerpt, exit_code, etc.)
- *   - getRecentErrors / getErrorsByGroup query correctness
- *   - Acked-with-error runs visible in error queries
+ *
+ * Group 2 -- Full-pipeline mock tests (runContainerAgent + fake process):
+ *   - Streaming output then crash: no duplicate delivery
+ *   - Crash without any output: error metadata populated
+ *   - Error includes exitCode, durationMs, stderrTail, logFile
+ *
+ * Group 3 -- run_ledger error observability:
+ *   - getRecentErrors returns acked-with-error runs
+ *   - getErrorsByGroup filters correctly
+ *   - Error metadata stored in run_ledger and queryable
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
+
+// --- Sentinel markers (must match container-runner.ts) ---
+const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
+const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
+// --- Mocks at system boundaries ---
 
 vi.mock('./config.js', () => ({
   ASSISTANT_NAME: 'Andy',
@@ -40,6 +55,70 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      existsSync: vi.fn(() => false),
+      mkdirSync: vi.fn(),
+      writeFileSync: vi.fn(),
+      readFileSync: vi.fn(() => ''),
+      readdirSync: vi.fn(() => []),
+      statSync: vi.fn(() => ({ isDirectory: () => false })),
+      copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
+    },
+  };
+});
+
+vi.mock('./mount-security.js', () => ({
+  validateAdditionalMounts: vi.fn(() => []),
+  loadMountAllowlist: vi.fn(() => null),
+}));
+
+vi.mock('./env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
+}));
+
+// --- Fake process for spawn ---
+
+function createFakeProcess() {
+  const proc = new EventEmitter() as EventEmitter & {
+    stdin: PassThrough;
+    stdout: PassThrough;
+    stderr: PassThrough;
+    kill: ReturnType<typeof vi.fn>;
+    pid: number;
+  };
+  proc.stdin = new PassThrough();
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.kill = vi.fn();
+  proc.pid = 99999;
+  return proc;
+}
+
+let fakeProc: ReturnType<typeof createFakeProcess>;
+
+vi.mock('child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('child_process')>('child_process');
+  return {
+    ...actual,
+    spawn: vi.fn(() => fakeProc),
+    exec: vi.fn(
+      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+        if (cb) cb(null);
+        return new EventEmitter();
+      },
+    ),
+  };
+});
+
+// --- Imports (must come after vi.mock calls) ---
+
 import { _initTestDatabase } from './db.js';
 import {
   createRun,
@@ -53,9 +132,28 @@ import {
   clearDeliveryAck,
   _resetForTest,
 } from './delivery-ack.js';
+import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import type { RegisteredGroup } from './types.js';
+
+// --- Test fixtures ---
+
+const testGroup: RegisteredGroup = {
+  name: 'Test Group',
+  folder: 'test-group',
+  trigger: '@Andy',
+  added_at: '2025-01-01T00:00:00.000Z',
+};
+
+function emitOutput(
+  proc: ReturnType<typeof createFakeProcess>,
+  output: ContainerOutput,
+) {
+  const json = JSON.stringify(output);
+  proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
+}
 
 // ---------------------------------------------------------------------------
-// Delivery-ack lifecycle
+// Group 1: Delivery-ack unit tests
 // ---------------------------------------------------------------------------
 
 describe('E2E: IPC delivery-ack dedup', () => {
@@ -80,9 +178,6 @@ describe('E2E: IPC delivery-ack dedup', () => {
   });
 
   it('TTL eviction: stale entries are evicted when map exceeds 100', () => {
-    // Record 101 entries with old timestamps by advancing Date.now()
-    const realDateNow = Date.now;
-
     // Freeze time at a base point
     const baseTime = 1_700_000_000_000;
     let currentTime = baseTime;
@@ -127,7 +222,147 @@ describe('E2E: IPC delivery-ack dedup', () => {
 });
 
 // ---------------------------------------------------------------------------
-// run_ledger error observability
+// Group 2: Full-pipeline mock tests (runContainerAgent + fake process)
+// ---------------------------------------------------------------------------
+
+describe('E2E: Full-pipeline IPC dedup scenarios', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+    _resetForTest();
+    _initTestDatabase();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('container sends streaming output then crashes: no duplicate', async () => {
+    // Track whether onOutput was called (simulates message delivery)
+    const deliveries: ContainerOutput[] = [];
+
+    const agentPromise = runContainerAgent(
+      testGroup,
+      {
+        prompt: 'test prompt',
+        groupFolder: testGroup.folder,
+        chatJid: 'tg:123',
+        isMain: false,
+      },
+      () => {}, // onProcess: no-op
+      async (result) => {
+        // Streaming callback: record delivery
+        deliveries.push(result);
+      },
+    );
+
+    // Let spawn happen
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Container emits a success result via stdout markers
+    emitOutput(fakeProc, {
+      status: 'success',
+      result: 'Here is the answer',
+      newSessionId: 'session-crash-001',
+    });
+
+    // Let the streaming output be processed
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Container crashes with OOM kill (code 137)
+    fakeProc.emit('close', 137);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const output = await agentPromise;
+
+    // The streaming callback was invoked exactly once with the result
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].result).toBe('Here is the answer');
+
+    // Container exited with error code, but the output was already streamed
+    // The container-runner reports error because exit code != 0
+    expect(output.status).toBe('error');
+    expect(output.exitCode).toBe(137);
+  });
+
+  it('container crashes without any output: error returned', async () => {
+    const deliveries: ContainerOutput[] = [];
+
+    const agentPromise = runContainerAgent(
+      testGroup,
+      {
+        prompt: 'test prompt',
+        groupFolder: testGroup.folder,
+        chatJid: 'tg:456',
+        isMain: false,
+      },
+      () => {},
+      async (result) => {
+        deliveries.push(result);
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Push some stderr before crash
+    fakeProc.stderr.push('Killed\n');
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Container crashes immediately with code 137, no stdout output
+    fakeProc.emit('close', 137);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const output = await agentPromise;
+
+    // No streaming output was delivered
+    expect(deliveries).toHaveLength(0);
+
+    // Error metadata is populated
+    expect(output.status).toBe('error');
+    expect(output.exitCode).toBe(137);
+    expect(output.error).toContain('Container exited with code 137');
+    expect(output.stderrTail).toContain('Killed');
+    expect(output.logFile).toBeDefined();
+    expect(output.logFile).toContain('.log');
+  });
+
+  it('container error includes exitCode, durationMs, stderrTail, logFile', async () => {
+    const agentPromise = runContainerAgent(
+      testGroup,
+      {
+        prompt: 'test prompt for metadata',
+        groupFolder: testGroup.folder,
+        chatJid: 'tg:789',
+        isMain: false,
+      },
+      () => {},
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Push stderr content
+    fakeProc.stderr.push('Error: something went wrong\nStack trace here\n');
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Container exits with code 1
+    fakeProc.emit('close', 1);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const output = await agentPromise;
+
+    expect(output.status).toBe('error');
+    expect(output.exitCode).toBe(1);
+    expect(typeof output.durationMs).toBe('number');
+    expect(output.durationMs).toBeGreaterThanOrEqual(0);
+    expect(output.stderrTail).toContain('Error: something went wrong');
+    expect(output.stderrTail).toContain('Stack trace here');
+    expect(output.logFile).toBeDefined();
+    expect(typeof output.logFile).toBe('string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group 3: run_ledger error observability
 // ---------------------------------------------------------------------------
 
 describe('E2E: run_ledger error metadata and queries', () => {
