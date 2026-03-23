@@ -43,7 +43,7 @@ def cli():
 @click.option(
     "--model",
     default=None,
-    help="LLM model override (e.g. claude-opus-4.6-1m for complex tasks)",
+    help="LLM model override (e.g. gpt-5.4 for complex tasks)",
 )
 @click.option(
     "--use-vision/--no-vision",
@@ -58,7 +58,7 @@ def run(task, storage_state, sensitive_data, allowed_domains, max_steps, model, 
 
     Examples:
         browser-agent run "Go to https://example.com and get the page title"
-        browser-agent run --model claude-opus-4.6-1m "Complex multi-step task"
+        browser-agent run --model gpt-5.4 "Complex multi-step task"
         browser-agent run --no-vision "Login to sensitive site"
     """
     asyncio.run(
@@ -76,7 +76,7 @@ async def _run(
     use_vision,
 ):
     from browser_use import Agent, Browser
-    from browser_use.llm.openai.like import ChatOpenAILike
+    from browser_use.llm import ChatOpenAI
 
     browser_kwargs = {
         "headless": True,
@@ -101,12 +101,12 @@ async def _run(
 
     browser = Browser(**browser_kwargs)
 
-    # browser-use 0.12+ has its own ChatOpenAI/ChatOpenAILike classes that
-    # implement the BaseChatModel protocol (with .provider property).
-    # ChatOpenAILike is designed for OpenAI-compatible endpoints like LiteLLM.
-    llm = ChatOpenAILike(
+    # Use browser-use's native ChatOpenAI which has full structured output
+    # support for GPT models (response_format, tool calling).
+    # Routes through LiteLLM on the host for API key management.
+    llm = ChatOpenAI(
         model=model_override
-        or os.environ.get("BROWSER_LLM_MODEL", "claude-sonnet-4.6"),
+        or os.environ.get("BROWSER_LLM_MODEL", "gpt-5.4"),
         api_key=os.environ.get("BROWSER_LLM_API_KEY", "sk-local"),
         base_url=os.environ.get(
             "BROWSER_LLM_BASE_URL", "http://host.docker.internal:4000/v1"
