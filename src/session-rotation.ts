@@ -3,11 +3,11 @@ import path from 'path';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
 
-// 10MB threshold: only rotate when disk transcript is truly large.
-// The SDK auto-compacts at ~95% context window usage, so we only need
-// to intervene when the accumulated JSONL files on disk slow down
-// container startup or waste storage.
-const SESSION_ROTATION_THRESHOLD_BYTES = 10 * 1024 * 1024;
+// 5MB threshold: rotate before sessions get large enough to cause OOM in
+// containers running browser-use (Chromium) alongside the SDK.
+// The SDK auto-compacts at ~95% context window usage, but accumulated
+// JSONL files still consume memory during container startup.
+const SESSION_ROTATION_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
 const RECENT_MESSAGES_TO_KEEP = 20;
 
@@ -185,6 +185,115 @@ function writeSessionContext(
 }
 
 /**
+ * Archive the full conversation transcript to conversations/ before cleanup.
+ * This mirrors what createPreCompactHook() does inside the container, ensuring
+ * we never lose the full history when rotation happens before SDK compaction.
+ */
+function archiveFullTranscript(
+  groupFolder: string,
+  transcriptPath: string,
+  messages: ParsedMessage[],
+): void {
+  if (messages.length === 0) return;
+
+  const groupDir = path.resolve(GROUPS_DIR, groupFolder);
+  const conversationsDir = path.join(groupDir, 'conversations');
+  fs.mkdirSync(conversationsDir, { recursive: true });
+
+  const date = new Date().toISOString().split('T')[0];
+  const time = new Date();
+  const timeStr = `${time.getHours().toString().padStart(2, '0')}${time.getMinutes().toString().padStart(2, '0')}`;
+  const filename = `${date}-rotation-${timeStr}.md`;
+  const filePath = path.join(conversationsDir, filename);
+
+  const lines: string[] = [];
+  lines.push('# Session Transcript (Rotation Archive)');
+  lines.push('');
+  lines.push(`Archived: ${new Date().toISOString()}`);
+  lines.push(`Source: ${path.basename(transcriptPath)}`);
+  lines.push(`Messages: ${messages.length}`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  for (const msg of messages) {
+    const sender = msg.role === 'user' ? 'User' : 'Assistant';
+    const content =
+      msg.content.length > 2000
+        ? msg.content.slice(0, 2000) + '...'
+        : msg.content;
+    lines.push(`**${sender}**: ${content}`);
+    lines.push('');
+  }
+
+  fs.writeFileSync(filePath, lines.join('\n'));
+  logger.debug(
+    { groupFolder, filePath, messageCount: messages.length },
+    'Archived full transcript before rotation cleanup',
+  );
+}
+
+/**
+ * Delete all JSONL transcript files and their companion directories
+ * for a group's session. Called after rotation to free disk space and
+ * prevent stale files from inflating getSessionTranscriptSize() on
+ * subsequent checks.
+ */
+function cleanupSessionFiles(groupFolder: string): number {
+  const sessionProjectsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    groupFolder,
+    '.claude',
+    'projects',
+  );
+
+  if (!fs.existsSync(sessionProjectsDir)) {
+    return 0;
+  }
+
+  let deletedCount = 0;
+  const walkDir = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkDir(fullPath);
+        // Remove empty session subdirectories (companion dirs for JSONL files)
+        try {
+          const remaining = fs.readdirSync(fullPath);
+          if (remaining.length === 0) {
+            fs.rmdirSync(fullPath);
+          }
+        } catch {
+          /* ignore */
+        }
+      } else if (entry.name.endsWith('.jsonl')) {
+        try {
+          fs.unlinkSync(fullPath);
+          deletedCount++;
+        } catch (err) {
+          logger.debug(
+            { file: fullPath, err },
+            'Failed to delete session transcript file',
+          );
+        }
+      }
+    }
+  };
+
+  try {
+    walkDir(sessionProjectsDir);
+  } catch (err) {
+    logger.debug(
+      { groupFolder, err },
+      'Failed to walk session projects directory during cleanup',
+    );
+  }
+
+  return deletedCount;
+}
+
+/**
  * Rotate a group's session: extract recent context, write a bridge file,
  * and signal that the session should be cleared.
  *
@@ -205,6 +314,10 @@ export function rotateSession(
 
       if (messages.length > 0) {
         summaryPath = writeSessionContext(groupFolder, messages);
+        // Archive the full transcript to conversations/ before we delete
+        // the JSONL files. This ensures no conversation history is lost
+        // when rotation happens before the SDK's PreCompact hook fires.
+        archiveFullTranscript(groupFolder, transcriptPath, messages);
       }
     }
 
@@ -214,12 +327,17 @@ export function rotateSession(
       1024
     ).toFixed(1);
 
+    // Delete old transcript files to free disk space and prevent
+    // getSessionTranscriptSize() from triggering rotation forever.
+    const deletedFiles = cleanupSessionFiles(groupFolder);
+
     logger.info(
       {
         groupFolder,
         previousSessionId: sessionId,
         sizeMB,
         summaryPath,
+        deletedFiles,
       },
       'Session rotated: transcript exceeded threshold',
     );

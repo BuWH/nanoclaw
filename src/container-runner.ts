@@ -307,6 +307,11 @@ function buildContainerArgs(
   // Container resource limits (empty string disables the flag)
   if (CONTAINER_MEMORY_LIMIT) {
     args.push('--memory', CONTAINER_MEMORY_LIMIT);
+    // Disable swap to prevent silent thrashing before OOM kill.
+    // Only on Docker -- Apple Container does not support --memory-swap.
+    if (CONTAINER_RUNTIME_BIN === 'docker') {
+      args.push('--memory-swap', CONTAINER_MEMORY_LIMIT);
+    }
   }
   if (CONTAINER_CPU_LIMIT) {
     args.push('--cpus', CONTAINER_CPU_LIMIT);

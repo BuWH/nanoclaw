@@ -68,12 +68,12 @@ export const FIRST_OUTPUT_TIMEOUT = parseInt(
 ); // 35min default — must exceed SDK query timeout (30min) so long coding/research turns aren't killed prematurely
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
-  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '7', 10) || 7,
+  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '3', 10) || 3,
 );
 // Note: --cpus flag is not supported by Apple Container runtime.
 // When using Apple Container, set CONTAINER_CPU_LIMIT='' to disable.
 export const CONTAINER_MEMORY_LIMIT =
-  process.env.CONTAINER_MEMORY_LIMIT || '4g';
+  process.env.CONTAINER_MEMORY_LIMIT || '8g';
 export const CONTAINER_CPU_LIMIT = process.env.CONTAINER_CPU_LIMIT || '2';
 
 function escapeRegex(str: string): string {
