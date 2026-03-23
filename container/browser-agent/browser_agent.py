@@ -76,7 +76,7 @@ async def _run(
     use_vision,
 ):
     from browser_use import Agent, Browser
-    from langchain_openai import ChatOpenAI
+    from browser_use.llm.openai.like import ChatOpenAILike
 
     browser_kwargs = {
         "headless": True,
@@ -101,8 +101,10 @@ async def _run(
 
     browser = Browser(**browser_kwargs)
 
-    # LiteLLM provides OpenAI-compatible API for all models including Claude
-    llm = ChatOpenAI(
+    # browser-use 0.12+ has its own ChatOpenAI/ChatOpenAILike classes that
+    # implement the BaseChatModel protocol (with .provider property).
+    # ChatOpenAILike is designed for OpenAI-compatible endpoints like LiteLLM.
+    llm = ChatOpenAILike(
         model=model_override
         or os.environ.get("BROWSER_LLM_MODEL", "claude-sonnet-4.6"),
         api_key=os.environ.get("BROWSER_LLM_API_KEY", "sk-local"),
