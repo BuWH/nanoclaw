@@ -564,7 +564,7 @@ export class TelegramChannel implements Channel {
         const replyText = reply.text || reply.caption || '[non-text message]';
         const replyFrom =
           reply.from?.first_name || reply.from?.username || 'Unknown';
-        content = `[Replying to ${replyFrom}: "${replyText.length > 200 ? replyText.slice(0, 200) + '...' : replyText}"]\n${content}`;
+        content = `[Replying to ${replyFrom}: "${replyText}"]\n${content}`;
       }
 
       // Store chat metadata for discovery
