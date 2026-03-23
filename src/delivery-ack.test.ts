@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 import {
   recordDeliveryAck,
   wasDelivered,
   clearDeliveryAck,
+  checkPendingIpcFiles,
   _resetForTest,
 } from './delivery-ack.js';
 
@@ -78,5 +82,23 @@ describe('delivery-ack', () => {
     expect(wasDelivered('fresh')).toBe(true);
 
     vi.restoreAllMocks();
+  });
+
+  it('checkPendingIpcFiles finds matching runId in pending IPC files', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-test-'));
+    const messagesDir = path.join(tmpDir, 'messages');
+    fs.mkdirSync(messagesDir, { recursive: true });
+
+    // Write a fake IPC message file
+    fs.writeFileSync(
+      path.join(messagesDir, '123-abc.json'),
+      JSON.stringify({ type: 'message', runId: 'run-xyz', text: 'hello' }),
+    );
+
+    expect(checkPendingIpcFiles(tmpDir, 'run-xyz')).toBe(true);
+    expect(checkPendingIpcFiles(tmpDir, 'run-other')).toBe(false);
+
+    // Cleanup
+    fs.rmSync(tmpDir, { recursive: true });
   });
 });

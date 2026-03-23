@@ -150,6 +150,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     { chatJid: data.chatJid, sourceGroup, sender: data.sender },
                     'IPC message sent',
                   );
+                  // Record delivery ack for this run. Note: this fires for ALL
+                  // IPC messages including progress updates, not just final replies.
+                  // If a run sends a progress update then crashes, we skip rollback —
+                  // this is intentional: the user already received a message, and
+                  // re-processing the same prompt would cause more confusion than
+                  // dropping the retry.
                   if (data.runId) {
                     recordDeliveryAck(data.runId as string);
                   }

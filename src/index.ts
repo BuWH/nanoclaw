@@ -59,7 +59,11 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { wasDelivered, clearDeliveryAck } from './delivery-ack.js';
+import {
+  wasDelivered,
+  clearDeliveryAck,
+  checkPendingIpcFiles,
+} from './delivery-ack.js';
 import { shouldRotateSession, rotateSession } from './session-rotation.js';
 import {
   findChannel,
@@ -562,6 +566,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // MCP tool) just before crashing.  The IPC watcher polls on a 1s interval,
     // so we wait slightly longer than one poll cycle for a delivery ack keyed
     // by this run's ID before deciding to roll back.
+    //
+    // Note: delivery acks fire for ALL IPC messages including progress updates,
+    // not just final replies.  If a run sends a progress update then crashes,
+    // we intentionally skip rollback — the user already received a message and
+    // re-processing the same prompt would cause more confusion than dropping
+    // the retry.
     await new Promise((resolve) =>
       setTimeout(resolve, IPC_POLL_INTERVAL + 200),
     );
@@ -570,6 +580,26 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.warn(
         { group: group.name, runId: run.id },
         'IPC delivery detected during grace window, skipping cursor rollback',
+      );
+      clearDeliveryAck(run.id);
+      transitionRun(run.id, 'acked', {
+        error: output.errorDetail,
+        ipc_delivered: 1,
+        exit_code: output.exitCode,
+        duration_ms: output.durationMs,
+        stderr_excerpt: output.stderrTail,
+        log_file: output.logFile,
+      });
+      return true;
+    }
+
+    // Fallback: check IPC directory directly for pending files the watcher
+    // hasn't processed yet (e.g. slow channel send or backlog).
+    const groupIpcDir = resolveGroupIpcPath(group.folder);
+    if (checkPendingIpcFiles(groupIpcDir, run.id)) {
+      logger.warn(
+        { group: group.name, runId: run.id },
+        'Pending IPC file detected for this run, skipping cursor rollback',
       );
       clearDeliveryAck(run.id);
       transitionRun(run.id, 'acked', {

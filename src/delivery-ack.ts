@@ -10,6 +10,9 @@
  * `run_ledger.ipc_delivered` (managed by the caller).
  */
 
+import fs from 'fs';
+import path from 'path';
+
 const deliveredRuns = new Map<string, number>();
 
 /** Max age (ms) before a stale delivery record is evicted. */
@@ -47,4 +50,34 @@ export function clearDeliveryAck(runId: string): void {
 /** Visible for testing only — reset all entries. */
 export function _resetForTest(): void {
   deliveredRuns.clear();
+}
+
+/**
+ * Check the IPC messages directory for pending files that contain a matching runId.
+ * This catches cases where the IPC watcher hasn't processed the file yet
+ * (e.g. slow channel send or backlog).
+ */
+export function checkPendingIpcFiles(ipcDir: string, runId: string): boolean {
+  try {
+    const messagesDir = path.join(ipcDir, 'messages');
+    if (!fs.existsSync(messagesDir)) return false;
+    const files = fs
+      .readdirSync(messagesDir)
+      .filter((f) => f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const data = JSON.parse(
+          fs.readFileSync(path.join(messagesDir, file), 'utf-8'),
+        );
+        if (data.runId === runId && data.type === 'message') {
+          return true;
+        }
+      } catch {
+        // skip malformed files
+      }
+    }
+  } catch {
+    // directory may not exist
+  }
+  return false;
 }

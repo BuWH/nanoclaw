@@ -203,6 +203,29 @@ describe('retryDeadLetter', () => {
     const result = retryDeadLetter('non-existent');
     expect(result).toBeNull();
   });
+
+  it('clears error metadata fields', () => {
+    const run = createRun('message', 'tg:test', 'test-group', 'payload', 0);
+    transitionRun(run.id, 'running');
+    transitionRun(run.id, 'failed', {
+      error: 'OOM',
+      exit_code: 137,
+      stderr_excerpt: 'killed',
+      duration_ms: 5000,
+      log_file: '/logs/test.log',
+      ipc_delivered: 1,
+    });
+    // With maxRetries=0, failed auto-promotes to dead_letter
+    const retried = retryDeadLetter(run.id);
+    expect(retried).not.toBeNull();
+    expect(retried!.status).toBe('queued');
+    expect(retried!.error).toBeNull();
+    expect(retried!.exit_code).toBeNull();
+    expect(retried!.stderr_excerpt).toBeNull();
+    expect(retried!.duration_ms).toBeNull();
+    expect(retried!.log_file).toBeNull();
+    expect(retried!.ipc_delivered).toBe(0);
+  });
 });
 
 describe('getRunHistory', () => {

@@ -211,7 +211,7 @@ export function retryDeadLetter(id: string): RunEntry | null {
   const newRetryCount = row.retry_count + 1;
 
   db.prepare(
-    `UPDATE run_ledger SET status = 'queued', retry_count = ?, error = NULL, updated_at = ? WHERE id = ?`,
+    `UPDATE run_ledger SET status = 'queued', retry_count = ?, error = NULL, stderr_excerpt = NULL, exit_code = NULL, duration_ms = NULL, log_file = NULL, ipc_delivered = 0, updated_at = ? WHERE id = ?`,
   ).run(newRetryCount, now, id);
 
   return {
@@ -219,6 +219,11 @@ export function retryDeadLetter(id: string): RunEntry | null {
     status: 'queued',
     retry_count: newRetryCount,
     error: null,
+    stderr_excerpt: null,
+    exit_code: null,
+    duration_ms: null,
+    log_file: null,
+    ipc_delivered: 0,
     updated_at: now,
   };
 }
