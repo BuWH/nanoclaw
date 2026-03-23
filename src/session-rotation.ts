@@ -185,6 +185,55 @@ function writeSessionContext(
 }
 
 /**
+ * Archive the full conversation transcript to conversations/ before cleanup.
+ * This mirrors what createPreCompactHook() does inside the container, ensuring
+ * we never lose the full history when rotation happens before SDK compaction.
+ */
+function archiveFullTranscript(
+  groupFolder: string,
+  transcriptPath: string,
+  messages: ParsedMessage[],
+): void {
+  if (messages.length === 0) return;
+
+  const groupDir = path.resolve(GROUPS_DIR, groupFolder);
+  const conversationsDir = path.join(groupDir, 'conversations');
+  fs.mkdirSync(conversationsDir, { recursive: true });
+
+  const date = new Date().toISOString().split('T')[0];
+  const time = new Date();
+  const timeStr = `${time.getHours().toString().padStart(2, '0')}${time.getMinutes().toString().padStart(2, '0')}`;
+  const filename = `${date}-rotation-${timeStr}.md`;
+  const filePath = path.join(conversationsDir, filename);
+
+  const lines: string[] = [];
+  lines.push('# Session Transcript (Rotation Archive)');
+  lines.push('');
+  lines.push(`Archived: ${new Date().toISOString()}`);
+  lines.push(`Source: ${path.basename(transcriptPath)}`);
+  lines.push(`Messages: ${messages.length}`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  for (const msg of messages) {
+    const sender = msg.role === 'user' ? 'User' : 'Assistant';
+    const content =
+      msg.content.length > 2000
+        ? msg.content.slice(0, 2000) + '...'
+        : msg.content;
+    lines.push(`**${sender}**: ${content}`);
+    lines.push('');
+  }
+
+  fs.writeFileSync(filePath, lines.join('\n'));
+  logger.debug(
+    { groupFolder, filePath, messageCount: messages.length },
+    'Archived full transcript before rotation cleanup',
+  );
+}
+
+/**
  * Delete all JSONL transcript files and their companion directories
  * for a group's session. Called after rotation to free disk space and
  * prevent stale files from inflating getSessionTranscriptSize() on
@@ -265,6 +314,10 @@ export function rotateSession(
 
       if (messages.length > 0) {
         summaryPath = writeSessionContext(groupFolder, messages);
+        // Archive the full transcript to conversations/ before we delete
+        // the JSONL files. This ensures no conversation history is lost
+        // when rotation happens before the SDK's PreCompact hook fires.
+        archiveFullTranscript(groupFolder, transcriptPath, messages);
       }
     }
 
