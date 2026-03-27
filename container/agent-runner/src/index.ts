@@ -693,15 +693,16 @@ async function main(): Promise<void> {
         break;
       }
 
-      // Emit session update so host can track it
-      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
-
       // Exit gracefully after too many iterations to bound memory growth.
-      // The host will spawn a fresh container for the next message.
+      // Skip the session-update marker so the host doesn't signal idle
+      // and pipe a follow-up that no container would consume.
       if (queryIteration >= MAX_QUERY_ITERATIONS) {
         log(`Reached max query iterations (${MAX_QUERY_ITERATIONS}), exiting to recycle container`);
         break;
       }
+
+      // Emit session update so host can track it
+      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
 
       log('Query ended, waiting for next IPC message...');
 
