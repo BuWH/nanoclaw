@@ -68,6 +68,11 @@ const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 const QUERY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — complex tasks (coding, research) can take a long time
+// Max query loop iterations before the container exits gracefully.
+// Each iteration resumes the full session, growing Node.js heap.
+// After this many iterations the host spawns a fresh container,
+// bounding memory to prevent OOM kills on long multi-turn sessions.
+const MAX_QUERY_ITERATIONS = 10;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -661,9 +666,11 @@ async function main(): Promise<void> {
   let resumeAt: string | undefined;
   // Images only apply to the first query; follow-up messages are text-only
   let currentImages = containerInput.images;
+  let queryIteration = 0;
   try {
     while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}, images: ${currentImages?.length || 0})...`);
+      queryIteration++;
+      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'}, images: ${currentImages?.length || 0}, iteration: ${queryIteration}/${MAX_QUERY_ITERATIONS})...`);
 
       const queryResult = await withTimeout(
         runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, currentImages),
@@ -688,6 +695,13 @@ async function main(): Promise<void> {
 
       // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+
+      // Exit gracefully after too many iterations to bound memory growth.
+      // The host will spawn a fresh container for the next message.
+      if (queryIteration >= MAX_QUERY_ITERATIONS) {
+        log(`Reached max query iterations (${MAX_QUERY_ITERATIONS}), exiting to recycle container`);
+        break;
+      }
 
       log('Query ended, waiting for next IPC message...');
 
