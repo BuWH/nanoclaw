@@ -15,6 +15,7 @@ import { handleXIpc } from './x-ipc.js';
 import { handleOpIpc } from './op-ipc.js';
 import { handleChromeIpc } from './chrome-ipc.js';
 import { handleCodexIpc } from './codex-ipc.js';
+import { handleBrowserIpc } from './browser-ipc.js';
 import { recordDeliveryAck } from './delivery-ack.js';
 import type { QueueStatusEntry, QueueMetrics } from './container-runner.js';
 
@@ -257,6 +258,22 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     logger.error(
                       { file, sourceGroup, err },
                       'Background Codex IPC handler error',
+                    );
+                  },
+                );
+                continue;
+              }
+
+              // Browser agent requests: fire-and-forget pattern.
+              // Runs browser-agent on the HOST (not container) to avoid OOM.
+              // Results are written to browser_results/ for the container to poll.
+              if (type?.startsWith('browser_')) {
+                fs.unlinkSync(filePath);
+                handleBrowserIpc(data, sourceGroup, isMain, DATA_DIR).catch(
+                  (err) => {
+                    logger.error(
+                      { file, sourceGroup, err },
+                      'Background Browser IPC handler error',
                     );
                   },
                 );
