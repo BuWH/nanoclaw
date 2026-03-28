@@ -323,7 +323,17 @@ function buildContainerArgs(
   // Cap Node.js heap so V8 triggers GC before hitting the container memory limit.
   // This gives Node a chance to reclaim memory or throw a JS-level OOM error
   // (which the agent-runner can catch and report) instead of a silent SIGKILL 137.
-  args.push('-e', 'NODE_OPTIONS=--max-old-space-size=8192');
+  // Reserve ~33% of the container limit for Chromium, Python, and OS overhead.
+  if (CONTAINER_MEMORY_LIMIT) {
+    const match = CONTAINER_MEMORY_LIMIT.match(/^(\d+)(g|m)?$/i);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      const unit = (match[2] || 'g').toLowerCase();
+      const totalMb = unit === 'g' ? value * 1024 : value;
+      const heapMb = Math.floor(totalMb * 0.67);
+      args.push('-e', `NODE_OPTIONS=--max-old-space-size=${heapMb}`);
+    }
+  }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
   args.push(
