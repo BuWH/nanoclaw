@@ -64,7 +64,11 @@ import {
   clearDeliveryAck,
   checkPendingIpcFiles,
 } from './delivery-ack.js';
-import { shouldRotateSession, rotateSession } from './session-rotation.js';
+import {
+  shouldRotateSession,
+  rotateSession,
+  cleanupOrphanSessionFiles,
+} from './session-rotation.js';
 import {
   findChannel,
   formatMessages,
@@ -717,6 +721,12 @@ async function runAgent(
 }> {
   const isMain = group.isMain === true;
   let sessionId: string | undefined = sessions[group.folder];
+
+  // Clean up JSONL files from previous crashed sessions before checking size.
+  // After OOM crashes the container creates a new session but the old JSONL
+  // files remain on disk, inflating getSessionTranscriptSize() and eventually
+  // triggering unnecessary rotation that discards the current valid session.
+  cleanupOrphanSessionFiles(group.folder, sessionId);
 
   // Auto-rotate session if transcript on disk is too large
   if (sessionId && shouldRotateSession(group.folder)) {

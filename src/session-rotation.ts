@@ -9,6 +9,67 @@ import { logger } from './logger.js';
 // JSONL files still consume memory during container startup.
 const SESSION_ROTATION_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Delete JSONL files that do not belong to the current session.
+ * After OOM crashes the container creates a new session, but the old
+ * session's JSONL files remain on disk.  Over time these orphans accumulate
+ * and inflate getSessionTranscriptSize(), eventually triggering an
+ * unnecessary rotation that deletes the *current* session too.
+ *
+ * Call this before each container spawn so only the active session's
+ * transcript is present when the SDK loads.
+ */
+export function cleanupOrphanSessionFiles(
+  groupFolder: string,
+  currentSessionId: string | undefined,
+): number {
+  if (!currentSessionId) return 0;
+
+  const sessionProjectsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    groupFolder,
+    '.claude',
+    'projects',
+  );
+
+  if (!fs.existsSync(sessionProjectsDir)) return 0;
+
+  let deletedCount = 0;
+  const currentFile = `${currentSessionId}.jsonl`;
+
+  const walkDir = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkDir(fullPath);
+      } else if (entry.name.endsWith('.jsonl') && entry.name !== currentFile) {
+        try {
+          fs.unlinkSync(fullPath);
+          deletedCount++;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  };
+
+  try {
+    walkDir(sessionProjectsDir);
+  } catch {
+    /* ignore */
+  }
+
+  if (deletedCount > 0) {
+    logger.info(
+      { groupFolder, currentSessionId, deletedCount },
+      'Cleaned up orphan session JSONL files',
+    );
+  }
+
+  return deletedCount;
+}
+
 const RECENT_MESSAGES_TO_KEEP = 20;
 
 interface ParsedMessage {
