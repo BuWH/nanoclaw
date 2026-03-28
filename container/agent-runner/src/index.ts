@@ -423,19 +423,39 @@ async function runQuery(
   }
 
   // Discover additional directories mounted at /workspace/extra/*
-  // These are passed to the SDK so their CLAUDE.md files are loaded automatically
+  // Only pass subdirectories that contain CLAUDE.md to avoid the SDK
+  // indexing/scanning entire large directory trees (which causes OOM).
+  // The agent can still access all files via tools (Read, Bash, etc.)
+  // but the SDK won't try to load context from every project.
   const extraDirs: string[] = [];
   const extraBase = '/workspace/extra';
   if (fs.existsSync(extraBase)) {
     for (const entry of fs.readdirSync(extraBase)) {
       const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) {
+      if (!fs.statSync(fullPath).isDirectory()) continue;
+      // Check if this directory itself has a CLAUDE.md
+      if (fs.existsSync(path.join(fullPath, 'CLAUDE.md'))) {
         extraDirs.push(fullPath);
+        continue;
+      }
+      // Otherwise scan one level deeper for project subdirs with CLAUDE.md
+      try {
+        for (const sub of fs.readdirSync(fullPath)) {
+          const subPath = path.join(fullPath, sub);
+          if (
+            fs.statSync(subPath).isDirectory() &&
+            fs.existsSync(path.join(subPath, 'CLAUDE.md'))
+          ) {
+            extraDirs.push(subPath);
+          }
+        }
+      } catch {
+        /* permission errors, etc. */
       }
     }
   }
   if (extraDirs.length > 0) {
-    log(`Additional directories: ${extraDirs.join(', ')}`);
+    log(`Additional directories (CLAUDE.md filter): ${extraDirs.join(', ')}`);
   }
 
   // Build MCP servers config

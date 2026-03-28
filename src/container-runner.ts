@@ -320,6 +320,11 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // Cap Node.js heap so V8 triggers GC before hitting the container memory limit.
+  // This gives Node a chance to reclaim memory or throw a JS-level OOM error
+  // (which the agent-runner can catch and report) instead of a silent SIGKILL 137.
+  args.push('-e', 'NODE_OPTIONS=--max-old-space-size=8192');
+
   // Route API traffic through the credential proxy (containers never see real secrets)
   args.push(
     '-e',
