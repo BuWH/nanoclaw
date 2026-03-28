@@ -36,8 +36,8 @@ Container OOM (exit 137) is the most common failure mode. Read `docs/2026-03-28-
 Key rules:
 - **Session continuity is paramount**. A `resume` session uses 2-4GB less peak memory than a `new` session. If the session is lost (crash without save), the container enters a vicious cycle of new-session -> OOM -> new-session.
 - **Orphan JSONL cleanup** runs before each spawn (`cleanupOrphanSessionFiles`). Never skip this.
-- **Memory limit** is 12GB default (`CONTAINER_MEMORY_LIMIT`). Node.js heap is capped at 67% of this.
-- **Host-side IPC** is the pattern for memory-heavy tools. Chromium, Python scripts, etc. should run on the host via IPC, not inside the container. See `src/browser-ipc.ts`, `src/x-ipc.ts`, `src/chrome-ipc.ts`.
+- **Memory limit** is 8GB default (`CONTAINER_MEMORY_LIMIT`). Sufficient when sessions are properly resumed.
+- **Host-side IPC** is the pattern for tools that need host resources. See `src/x-ipc.ts`, `src/chrome-ipc.ts`.
 
 ## Verification: HTTP Test Channel (Mandatory)
 

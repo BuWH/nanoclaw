@@ -73,7 +73,7 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
 // Note: --cpus flag is not supported by Apple Container runtime.
 // When using Apple Container, set CONTAINER_CPU_LIMIT='' to disable.
 export const CONTAINER_MEMORY_LIMIT =
-  process.env.CONTAINER_MEMORY_LIMIT || '12g';
+  process.env.CONTAINER_MEMORY_LIMIT || '8g';
 export const CONTAINER_CPU_LIMIT = process.env.CONTAINER_CPU_LIMIT || '2';
 
 function escapeRegex(str: string): string {
