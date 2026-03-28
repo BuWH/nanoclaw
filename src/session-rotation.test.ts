@@ -21,6 +21,7 @@ import {
   getSessionTranscriptSize,
   shouldRotateSession,
   rotateSession,
+  cleanupOrphanSessionFiles,
 } from './session-rotation.js';
 
 const TEST_DIR = '/tmp/nanoclaw-test-rotation';
@@ -213,6 +214,116 @@ describe('session-rotation', () => {
       // 1500 chars + "..." truncation
       expect(content).toContain('...');
       expect(content.length).toBeLessThan(longMessage.length);
+    });
+  });
+
+  describe('cleanupOrphanSessionFiles', () => {
+    function createSessionFile(
+      groupFolder: string,
+      sessionId: string,
+      sizeBytes = 100,
+    ): string {
+      const projectsDir = path.join(
+        DATA_DIR,
+        'sessions',
+        groupFolder,
+        '.claude',
+        'projects',
+        '-workspace-group',
+      );
+      fs.mkdirSync(projectsDir, { recursive: true });
+      const filePath = path.join(projectsDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(filePath, 'x'.repeat(sizeBytes));
+      return filePath;
+    }
+
+    it('returns 0 when no current session ID', () => {
+      expect(cleanupOrphanSessionFiles('test-group', undefined)).toBe(0);
+    });
+
+    it('returns 0 when session directory does not exist', () => {
+      expect(cleanupOrphanSessionFiles('nonexistent', 'session-abc')).toBe(0);
+    });
+
+    it('deletes orphan JSONL files but keeps the current session', () => {
+      const currentId = 'current-session-id';
+      const orphan1 = 'orphan-session-1';
+      const orphan2 = 'orphan-session-2';
+
+      const currentPath = createSessionFile('test-group', currentId, 500);
+      const orphan1Path = createSessionFile('test-group', orphan1, 1000);
+      const orphan2Path = createSessionFile('test-group', orphan2, 2000);
+
+      expect(fs.existsSync(currentPath)).toBe(true);
+      expect(fs.existsSync(orphan1Path)).toBe(true);
+      expect(fs.existsSync(orphan2Path)).toBe(true);
+
+      const deleted = cleanupOrphanSessionFiles('test-group', currentId);
+
+      expect(deleted).toBe(2);
+      expect(fs.existsSync(currentPath)).toBe(true);
+      expect(fs.existsSync(orphan1Path)).toBe(false);
+      expect(fs.existsSync(orphan2Path)).toBe(false);
+    });
+
+    it('returns 0 when only the current session file exists', () => {
+      const currentId = 'only-session';
+      createSessionFile('test-group', currentId);
+
+      const deleted = cleanupOrphanSessionFiles('test-group', currentId);
+      expect(deleted).toBe(0);
+    });
+
+    it('does not delete non-JSONL files', () => {
+      const currentId = 'current-session';
+      createSessionFile('test-group', currentId);
+
+      const projectsDir = path.join(
+        DATA_DIR,
+        'sessions',
+        'test-group',
+        '.claude',
+        'projects',
+        '-workspace-group',
+      );
+      const otherFile = path.join(projectsDir, 'sessions-index.json');
+      fs.writeFileSync(otherFile, '{}');
+
+      cleanupOrphanSessionFiles('test-group', currentId);
+      expect(fs.existsSync(otherFile)).toBe(true);
+    });
+
+    it('reduces getSessionTranscriptSize after cleanup', () => {
+      const currentId = 'current';
+      createSessionFile('test-group', currentId, 500);
+      createSessionFile('test-group', 'orphan-big', 50_000);
+
+      const sizeBefore = getSessionTranscriptSize('test-group');
+      expect(sizeBefore).toBeGreaterThan(50_000);
+
+      cleanupOrphanSessionFiles('test-group', currentId);
+
+      const sizeAfter = getSessionTranscriptSize('test-group');
+      expect(sizeAfter).toBeLessThan(1000);
+      expect(sizeAfter).toBeLessThan(sizeBefore);
+    });
+
+    it('prevents false rotation trigger from orphan accumulation', () => {
+      // Simulate the vicious cycle: many orphans inflate size past threshold
+      const currentId = 'small-current';
+      createSessionFile('test-group', currentId, 100);
+
+      // Add orphans totaling > 5MB
+      for (let i = 0; i < 6; i++) {
+        createSessionFile('test-group', `orphan-${i}`, 1_000_000);
+      }
+
+      // Without cleanup, rotation would trigger (> 5MB)
+      expect(shouldRotateSession('test-group')).toBe(true);
+
+      // After cleanup, only the small current file remains
+      cleanupOrphanSessionFiles('test-group', currentId);
+      expect(shouldRotateSession('test-group')).toBe(false);
     });
   });
 });
