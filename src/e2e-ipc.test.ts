@@ -53,23 +53,17 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-vi.mock('fs', async () => {
-  const actual = await vi.importActual<typeof import('fs')>('fs');
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      existsSync: vi.fn(() => false),
-      mkdirSync: vi.fn(),
-      writeFileSync: vi.fn(),
-      readFileSync: vi.fn(() => ''),
-      readdirSync: vi.fn(() => []),
-      statSync: vi.fn(() => ({ isDirectory: () => false })),
-      copyFileSync: vi.fn(),
-      cpSync: vi.fn(),
-    },
-  };
-});
+vi.mock('fs', () => ({
+  existsSync: vi.fn(() => false),
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  readFileSync: vi.fn(() => ''),
+  readdirSync: vi.fn(() => []),
+  statSync: vi.fn(() => ({ isDirectory: () => false })),
+  unlinkSync: vi.fn(),
+  rmdirSync: vi.fn(),
+  constants: {},
+}));
 
 vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
@@ -100,20 +94,15 @@ function createFakeProcess() {
 
 let fakeProc: ReturnType<typeof createFakeProcess>;
 
-vi.mock('child_process', async () => {
-  const actual =
-    await vi.importActual<typeof import('child_process')>('child_process');
-  return {
-    ...actual,
-    spawn: vi.fn(() => fakeProc),
-    exec: vi.fn(
-      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-        if (cb) cb(null);
-        return new EventEmitter();
-      },
-    ),
-  };
-});
+vi.mock('child_process', () => ({
+  spawn: vi.fn(() => fakeProc),
+  exec: vi.fn(
+    (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+      if (cb) cb(null);
+      return new EventEmitter();
+    },
+  ),
+}));
 
 // --- Imports (must come after vi.mock calls) ---
 
@@ -181,7 +170,7 @@ describe('E2E: Full-pipeline IPC dedup scenarios', () => {
     );
 
     // Let spawn happen
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container emits a success result via stdout markers
     emitOutput(fakeProc, {
@@ -191,11 +180,11 @@ describe('E2E: Full-pipeline IPC dedup scenarios', () => {
     });
 
     // Let the streaming output be processed
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container crashes with OOM kill (code 137)
     fakeProc.emit('close', 137);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const output = await agentPromise;
 
@@ -226,15 +215,15 @@ describe('E2E: Full-pipeline IPC dedup scenarios', () => {
       },
     );
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Push some stderr before crash
     fakeProc.stderr.push('Killed\n');
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container crashes immediately with code 137, no stdout output
     fakeProc.emit('close', 137);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const output = await agentPromise;
 
@@ -262,15 +251,15 @@ describe('E2E: Full-pipeline IPC dedup scenarios', () => {
       () => {},
     );
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Push stderr content
     fakeProc.stderr.push('Error: something went wrong\nStack trace here\n');
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container exits with code 1
     fakeProc.emit('close', 1);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const output = await agentPromise;
 

@@ -55,24 +55,17 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-vi.mock('fs', async () => {
-  const actual = await vi.importActual<typeof import('fs')>('fs');
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      existsSync: vi.fn(() => false),
-      mkdirSync: vi.fn(),
-      writeFileSync: vi.fn(),
-      readFileSync: vi.fn(() => ''),
-      readdirSync: vi.fn(() => []),
-      statSync: vi.fn(() => ({ isDirectory: () => false })),
-      copyFileSync: vi.fn(),
-      cpSync: vi.fn(),
-      renameSync: vi.fn(),
-    },
-  };
-});
+vi.mock('fs', () => ({
+  existsSync: vi.fn(() => false),
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  readFileSync: vi.fn(() => ''),
+  readdirSync: vi.fn(() => []),
+  statSync: vi.fn(() => ({ isDirectory: () => false })),
+  unlinkSync: vi.fn(),
+  rmdirSync: vi.fn(),
+  constants: {},
+}));
 
 vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
@@ -144,29 +137,24 @@ function emitOutput(
 const spawnedProcesses = new Map<string, FakeProcess>();
 let spawnOrder: string[] = [];
 
-vi.mock('child_process', async () => {
-  const actual =
-    await vi.importActual<typeof import('child_process')>('child_process');
-  return {
-    ...actual,
-    spawn: vi.fn((_cmd: string, args: string[]) => {
-      // Extract container name from args: ['run', '-i', '--rm', '--name', 'nanoclaw-xxx', ...]
-      const nameIdx = args.indexOf('--name');
-      const containerName =
-        nameIdx !== -1 ? args[nameIdx + 1] : `unknown-${Date.now()}`;
-      const proc = createFakeProcess(Math.floor(Math.random() * 100000));
-      spawnedProcesses.set(containerName, proc);
-      spawnOrder.push(containerName);
-      return proc;
-    }),
-    exec: vi.fn(
-      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-        if (cb) cb(null);
-        return new EventEmitter();
-      },
-    ),
-  };
-});
+vi.mock('child_process', () => ({
+  spawn: vi.fn((_cmd: string, args: string[]) => {
+    // Extract container name from args: ['run', '-i', '--rm', '--name', 'nanoclaw-xxx', ...]
+    const nameIdx = args.indexOf('--name');
+    const containerName =
+      nameIdx !== -1 ? args[nameIdx + 1] : `unknown-${Date.now()}`;
+    const proc = createFakeProcess(Math.floor(Math.random() * 100000));
+    spawnedProcesses.set(containerName, proc);
+    spawnOrder.push(containerName);
+    return proc;
+  }),
+  exec: vi.fn(
+    (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+      if (cb) cb(null);
+      return new EventEmitter();
+    },
+  ),
+}));
 
 // --- Imports (after mocks) ---
 
@@ -377,9 +365,9 @@ async function completeContainer(
     result: response,
     newSessionId: sessionId,
   });
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTime(10);
   proc.emit('close', 0);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTime(10);
 }
 
 // Helper: fail a group's container
@@ -387,7 +375,7 @@ async function failContainer(groupFolder: string) {
   const proc = findProcessForGroup(groupFolder);
   if (!proc) throw new Error(`No container found for ${groupFolder}`);
   proc.emit('close', 1);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTime(10);
 }
 
 // --- Tests ---
@@ -443,7 +431,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     storeMessage(createMessage(MAIN_JID, 'Hello, what is 2+2?'));
 
     queue.enqueueMessageCheck(MAIN_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Container should have been spawned
     expect(spawnOrder.length).toBe(1);
@@ -468,7 +456,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     queue.enqueueMessageCheck(MAIN_JID);
     queue.enqueueMessageCheck(GROUP_A_JID);
     queue.enqueueMessageCheck(GROUP_B_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // All 3 containers should be spawned
     expect(spawnOrder.length).toBe(3);
@@ -494,7 +482,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     queue.enqueueMessageCheck(GROUP_A_JID);
     queue.enqueueMessageCheck(GROUP_B_JID);
     queue.enqueueMessageCheck(GROUP_C_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     expect(spawnOrder.length).toBe(3);
     const initialSpawnCount = spawnOrder.length;
@@ -505,7 +493,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
 
     queue.enqueueMessageCheck(MAIN_JID);
     queue.enqueueMessageCheck(GROUP_A_JID); // A already has active, so this sets pendingMessages
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // No new containers yet -- all slots full
     expect(spawnOrder.length).toBe(initialSpawnCount);
@@ -530,7 +518,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     queue.enqueueMessageCheck(GROUP_A_JID);
     queue.enqueueMessageCheck(GROUP_B_JID);
     queue.enqueueMessageCheck(GROUP_C_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // All 3 should have started -- soft reserve is released
     expect(spawnOrder.length).toBe(3);
@@ -552,24 +540,24 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     queue.enqueueMessageCheck(GROUP_A_JID);
     queue.enqueueMessageCheck(GROUP_B_JID);
     queue.enqueueMessageCheck(GROUP_C_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     expect(spawnOrder.length).toBe(3);
 
     // Group A finishes its work -- container becomes idle
     const procA = findProcessForGroup('group-a')!;
     emitOutput(procA, { status: 'success', result: 'A done' });
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
     // notifyIdle is called by the output callback (status === 'success')
 
     // Main message arrives at full capacity
     storeMessage(createMessage(MAIN_JID, 'Urgent from main'));
     queue.enqueueMessageCheck(MAIN_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Check that _close was written (preemption signal)
     const fsModule = await import('fs');
-    const writeFileSync = vi.mocked(fsModule.default.writeFileSync);
+    const writeFileSync = mockWriteFileSync;
     const closeWrites = writeFileSync.mock.calls.filter(
       (call) =>
         typeof call[0] === 'string' && (call[0] as string).endsWith('_close'),
@@ -578,7 +566,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
 
     // Complete remaining containers
     procA.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Main should have been queued and will start once the preempted slot frees
     // (the queue puts main at priority 0 in the waiting queue)
@@ -589,9 +577,9 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     for (const proc of spawnedProcesses.values()) {
       if (!proc.killed) {
         emitOutput(proc, { status: 'success', result: 'done' });
-        await vi.advanceTimersByTimeAsync(10);
+        await vi.advanceTimersByTime(10);
         proc.emit('close', 0);
-        await vi.advanceTimersByTimeAsync(10);
+        await vi.advanceTimersByTime(10);
       }
     }
   });
@@ -602,7 +590,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     // Start a message for main
     storeMessage(createMessage(MAIN_JID, 'Main work'));
     queue.enqueueMessageCheck(MAIN_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     expect(spawnOrder.length).toBe(1);
 
@@ -612,7 +600,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
       taskCompleted = true;
     });
     queue.enqueueTask(GROUP_A_JID, 'task-1', taskFn);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Task should have started (slot available)
     expect(taskFn).toHaveBeenCalledTimes(1);
@@ -634,7 +622,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     queue.enqueueMessageCheck(GROUP_A_JID);
     queue.enqueueMessageCheck(GROUP_B_JID);
     queue.enqueueMessageCheck(GROUP_C_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Queue a task and a main message (both waiting)
     let taskStarted = false;
@@ -647,7 +635,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     );
     storeMessage(createMessage(MAIN_JID, 'High priority main'));
     queue.enqueueMessageCheck(MAIN_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Free one slot
     await completeContainer('group-a', 'A done');
@@ -671,21 +659,21 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
   it('queues second message for same group behind active container', async () => {
     storeMessage(createMessage(MAIN_JID, 'First message'));
     queue.enqueueMessageCheck(MAIN_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     expect(spawnOrder.length).toBe(1);
 
     // Second message while container is active
     storeMessage(createMessage(MAIN_JID, 'Second message'));
     queue.enqueueMessageCheck(MAIN_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Should NOT spawn a second container -- queued as pendingMessages
     expect(spawnOrder.length).toBe(1);
 
     // Complete first -- second should auto-start
     await completeContainer('main', 'First reply');
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTime(100);
 
     // Second container should be spawned now
     const mainSpawns = spawnOrder.filter((n) => n.includes('main'));
@@ -703,7 +691,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     queue.enqueueMessageCheck(GROUP_A_JID);
     queue.enqueueMessageCheck(GROUP_B_JID);
     queue.enqueueMessageCheck(GROUP_C_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     let metrics = queue.getQueueMetrics();
     expect(metrics.activeCount).toBe(3);
@@ -746,7 +734,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     queue.enqueueMessageCheck(GROUP_A_JID);
     queue.enqueueMessageCheck(GROUP_B_JID);
     queue.enqueueMessageCheck(GROUP_C_JID);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Queue main (waiting)
     storeMessage(createMessage(MAIN_JID, 'Main waiting'));
@@ -756,7 +744,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     await failContainer('group-a');
 
     // Main should get the freed slot
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTime(100);
     const mainSpawns = spawnOrder.filter((n) => n.includes('main'));
     expect(mainSpawns.length).toBe(1);
 
@@ -785,7 +773,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     // activeCount should never exceed MAX_CONCURRENT_CONTAINERS (3)
     expect(queue['activeCount']).toBeLessThanOrEqual(3);
 
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTime(50);
 
     // Only 3 containers spawned (limit = 3)
     expect(spawnOrder.length).toBe(3);
@@ -799,7 +787,7 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
       spawnOrder[0].includes('main') ? 'main' : spawnOrder[0].split('-')[1],
       'done',
     );
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTime(100);
 
     expect(spawnOrder.length).toBe(4);
 
@@ -807,9 +795,9 @@ describe('E2E Queue: Multi-Group Concurrency with Priority', () => {
     for (const proc of spawnedProcesses.values()) {
       if (!proc.killed) {
         emitOutput(proc, { status: 'success', result: 'cleanup' });
-        await vi.advanceTimersByTimeAsync(10);
+        await vi.advanceTimersByTime(10);
         proc.emit('close', 0);
-        await vi.advanceTimersByTimeAsync(10);
+        await vi.advanceTimersByTime(10);
       }
     }
   });

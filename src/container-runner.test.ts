@@ -32,22 +32,16 @@ vi.mock('./logger.js', () => ({
 }));
 
 // Mock fs
-vi.mock('fs', async () => {
-  const actual = await vi.importActual<typeof import('fs')>('fs');
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      existsSync: vi.fn(() => false),
-      mkdirSync: vi.fn(),
-      writeFileSync: vi.fn(),
-      readFileSync: vi.fn(() => ''),
-      readdirSync: vi.fn(() => []),
-      statSync: vi.fn(() => ({ isDirectory: () => false })),
-      copyFileSync: vi.fn(),
-    },
-  };
-});
+vi.mock('fs', () => ({
+  existsSync: vi.fn(() => false),
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  readFileSync: vi.fn(() => ''),
+  readdirSync: vi.fn(() => []),
+  statSync: vi.fn(() => ({ isDirectory: () => false })),
+  copyFileSync: vi.fn(),
+  constants: {},
+}));
 
 // Mock mount-security
 vi.mock('./mount-security.js', () => ({
@@ -74,20 +68,15 @@ function createFakeProcess() {
 let fakeProc: ReturnType<typeof createFakeProcess>;
 
 // Mock child_process.spawn
-vi.mock('child_process', async () => {
-  const actual =
-    await vi.importActual<typeof import('child_process')>('child_process');
-  return {
-    ...actual,
-    spawn: vi.fn(() => fakeProc),
-    exec: vi.fn(
-      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-        if (cb) cb(null);
-        return new EventEmitter();
-      },
-    ),
-  };
-});
+vi.mock('child_process', () => ({
+  spawn: vi.fn(() => fakeProc),
+  exec: vi.fn(
+    (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+      if (cb) cb(null);
+      return new EventEmitter();
+    },
+  ),
+}));
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
@@ -141,16 +130,16 @@ describe('container-runner timeout behavior', () => {
     });
 
     // Let output processing settle
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Fire the hard timeout (IDLE_TIMEOUT + 30s = 1830000ms)
-    await vi.advanceTimersByTimeAsync(1830000);
+    await vi.advanceTimersByTime(1830000);
 
     // Emit close event (as if container was stopped by the timeout)
     fakeProc.emit('close', 137);
 
     // Let the promise resolve
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const result = await resultPromise;
     expect(result.status).toBe('success');
@@ -170,12 +159,12 @@ describe('container-runner timeout behavior', () => {
     );
 
     // No output emitted — fire the hard timeout
-    await vi.advanceTimersByTimeAsync(1830000);
+    await vi.advanceTimersByTime(1830000);
 
     // Emit close event
     fakeProc.emit('close', 137);
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const result = await resultPromise;
     expect(result.status).toBe('error');
@@ -199,12 +188,12 @@ describe('container-runner timeout behavior', () => {
       newSessionId: 'session-456',
     });
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Normal exit (no timeout)
     fakeProc.emit('close', 0);
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const result = await resultPromise;
     expect(result.status).toBe('success');
@@ -220,17 +209,17 @@ describe('container-runner timeout behavior', () => {
       onOutput,
     );
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Push stderr before close
     fakeProc.stderr.push('Error: ENOMEM\nCannot allocate memory');
     fakeProc.stderr.push(null); // signal end
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container crashes with code 137
     fakeProc.emit('close', 137);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const result = await resultPromise;
 
