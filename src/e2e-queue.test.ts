@@ -55,10 +55,13 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+// Create mock function for writeFileSync that can be accessed in tests
+const mockWriteFileSync = vi.fn();
+
 vi.mock('fs', () => ({
   existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
-  writeFileSync: vi.fn(),
+  writeFileSync: mockWriteFileSync,
   readFileSync: vi.fn(() => ''),
   readdirSync: vi.fn(() => []),
   statSync: vi.fn(() => ({ isDirectory: () => false })),
