@@ -227,6 +227,7 @@ export class GroupQueue {
 
     if (state.message.active) {
       state.pendingMessages = true;
+      this.queueVersion++;
       logger.debug({ groupJid }, 'Message container active, message queued');
       return;
     }
@@ -236,6 +237,7 @@ export class GroupQueue {
 
     if (!canStart) {
       state.pendingMessages = true;
+      this.queueVersion++;
 
       // Main message at full capacity: try to preempt an idle container
       if (isMain) {
@@ -309,6 +311,7 @@ export class GroupQueue {
 
     if (state.task.active) {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
+      this.queueVersion++;
       logger.info(
         { groupJid, taskId, queueDepth: state.pendingTasks.length },
         'Task queued behind active task container',
@@ -381,6 +384,7 @@ export class GroupQueue {
   notifyIdle(groupJid: string): void {
     const state = this.getGroup(groupJid);
     state.idleWaiting = true;
+    this.queueVersion++;
 
     const hasLocalPendingTasks =
       state.pendingTasks.length > 0 && !state.task.active;
@@ -400,7 +404,8 @@ export class GroupQueue {
   sendMessage(groupJid: string, text: string): boolean {
     const state = this.getGroup(groupJid);
     if (!state.message.active || !state.message.groupFolder) return false;
-    state.idleWaiting = false; // Agent is about to receive work, no longer idle
+    state.idleWaiting = false;
+    this.queueVersion++;
 
     const inputDir = path.join(
       DATA_DIR,

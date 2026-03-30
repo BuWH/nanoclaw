@@ -61,6 +61,7 @@ export function cleanupOrphanSessionFiles(
 
   let deletedCount = 0;
   let survivingSize = 0;
+  let deletionFailed = false;
   const currentFile = `${currentSessionId}.jsonl`;
 
   try {
@@ -70,7 +71,7 @@ export function cleanupOrphanSessionFiles(
           fs.unlinkSync(fullPath);
           deletedCount++;
         } catch {
-          /* ignore */
+          deletionFailed = true;
         }
       } else {
         survivingSize += fs.statSync(fullPath).size;
@@ -78,6 +79,12 @@ export function cleanupOrphanSessionFiles(
     });
   } catch {
     /* ignore */
+  }
+
+  // If any orphan deletion failed, the survivingSize is inaccurate.
+  // Fall back to a full walk so shouldRotateSession gets the true total.
+  if (deletionFailed) {
+    survivingSize = getSessionTranscriptSize(groupFolder);
   }
 
   if (deletedCount > 0) {
