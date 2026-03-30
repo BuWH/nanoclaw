@@ -883,6 +883,23 @@ export async function runContainerAgent(
   });
 }
 
+/**
+ * Write a JSON snapshot to a group's IPC directory.
+ * Shared helper for tasks, queue status, and groups snapshots.
+ */
+function writeIpcSnapshot(
+  groupFolder: string,
+  filename: string,
+  data: unknown,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(groupIpcDir, filename),
+    JSON.stringify(data, null, 2),
+  );
+}
+
 export function writeTasksSnapshot(
   groupFolder: string,
   isMain: boolean,
@@ -900,17 +917,12 @@ export function writeTasksSnapshot(
     context_mode: string;
   }>,
 ): void {
-  // Write filtered tasks to the group's IPC directory
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
-
   // Main sees all tasks, others only see their own
   const filteredTasks = isMain
     ? tasks
     : tasks.filter((t) => t.groupFolder === groupFolder);
 
-  const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
-  fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
+  writeIpcSnapshot(groupFolder, 'current_tasks.json', filteredTasks);
 }
 
 export interface QueueStatusEntry {
@@ -943,9 +955,6 @@ export function writeQueueStatusSnapshot(
   registeredGroups: Record<string, { name: string; folder: string }>,
   metrics?: QueueMetrics,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
-
   // Resolve group JIDs to names and filter by visibility
   const visibleEntries = entries
     .filter((e) => {
@@ -961,19 +970,11 @@ export function writeQueueStatusSnapshot(
       };
     });
 
-  const statusFile = path.join(groupIpcDir, 'queue_status.json');
-  fs.writeFileSync(
-    statusFile,
-    JSON.stringify(
-      {
-        entries: visibleEntries,
-        ...(metrics ? { metrics } : {}),
-        timestamp: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-  );
+  writeIpcSnapshot(groupFolder, 'queue_status.json', {
+    entries: visibleEntries,
+    ...(metrics ? { metrics } : {}),
+    timestamp: new Date().toISOString(),
+  });
 }
 
 export interface AvailableGroup {
@@ -994,22 +995,11 @@ export function writeGroupsSnapshot(
   groups: AvailableGroup[],
   registeredJids: Set<string>,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
-
   // Main sees all groups; others see nothing (they can't activate groups)
   const visibleGroups = isMain ? groups : [];
 
-  const groupsFile = path.join(groupIpcDir, 'available_groups.json');
-  fs.writeFileSync(
-    groupsFile,
-    JSON.stringify(
-      {
-        groups: visibleGroups,
-        lastSync: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-  );
+  writeIpcSnapshot(groupFolder, 'available_groups.json', {
+    groups: visibleGroups,
+    lastSync: new Date().toISOString(),
+  });
 }

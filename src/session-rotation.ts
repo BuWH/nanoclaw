@@ -9,6 +9,33 @@ import { logger } from './logger.js';
 // JSONL files still consume memory during container startup.
 const SESSION_ROTATION_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
+// ── Shared helpers ──────────────────────────────────────────────────────
+
+function getSessionProjectsDir(groupFolder: string): string {
+  return path.join(DATA_DIR, 'sessions', groupFolder, '.claude', 'projects');
+}
+
+function walkJsonlFiles(
+  dir: string,
+  visitor: (fullPath: string, entry: fs.Dirent) => void,
+): void {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkJsonlFiles(fullPath, visitor);
+    } else if (entry.name.endsWith('.jsonl')) {
+      visitor(fullPath, entry);
+    }
+  }
+}
+
+// ── Public API ──────────────────────────────────────────────────────────
+
+export interface CleanupResult {
+  deletedCount: number;
+  survivingSize: number;
+}
+
 /**
  * Delete JSONL files that do not belong to the current session.
  * After OOM crashes the container creates a new session, but the old
@@ -18,44 +45,37 @@ const SESSION_ROTATION_THRESHOLD_BYTES = 5 * 1024 * 1024;
  *
  * Call this before each container spawn so only the active session's
  * transcript is present when the SDK loads.
+ *
+ * Returns the number of deleted orphan files and the total size of
+ * surviving JSONL files so callers can skip a separate size walk.
  */
 export function cleanupOrphanSessionFiles(
   groupFolder: string,
   currentSessionId: string | undefined,
-): number {
-  if (!currentSessionId) return 0;
+): CleanupResult {
+  if (!currentSessionId) return { deletedCount: 0, survivingSize: 0 };
 
-  const sessionProjectsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    groupFolder,
-    '.claude',
-    'projects',
-  );
-
-  if (!fs.existsSync(sessionProjectsDir)) return 0;
+  const sessionProjectsDir = getSessionProjectsDir(groupFolder);
+  if (!fs.existsSync(sessionProjectsDir))
+    return { deletedCount: 0, survivingSize: 0 };
 
   let deletedCount = 0;
+  let survivingSize = 0;
   const currentFile = `${currentSessionId}.jsonl`;
 
-  const walkDir = (dir: string) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walkDir(fullPath);
-      } else if (entry.name.endsWith('.jsonl') && entry.name !== currentFile) {
+  try {
+    walkJsonlFiles(sessionProjectsDir, (fullPath, entry) => {
+      if (entry.name !== currentFile) {
         try {
           fs.unlinkSync(fullPath);
           deletedCount++;
         } catch {
           /* ignore */
         }
+      } else {
+        survivingSize += fs.statSync(fullPath).size;
       }
-    }
-  };
-
-  try {
-    walkDir(sessionProjectsDir);
+    });
   } catch {
     /* ignore */
   }
@@ -67,7 +87,7 @@ export function cleanupOrphanSessionFiles(
     );
   }
 
-  return deletedCount;
+  return { deletedCount, survivingSize };
 }
 
 const RECENT_MESSAGES_TO_KEEP = 20;
@@ -88,32 +108,14 @@ export interface RotationResult {
  * Returns 0 if the session directory doesn't exist.
  */
 export function getSessionTranscriptSize(groupFolder: string): number {
-  const sessionProjectsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    groupFolder,
-    '.claude',
-    'projects',
-  );
-
-  if (!fs.existsSync(sessionProjectsDir)) {
-    return 0;
-  }
+  const sessionProjectsDir = getSessionProjectsDir(groupFolder);
+  if (!fs.existsSync(sessionProjectsDir)) return 0;
 
   let totalSize = 0;
-  const walkDir = (dir: string) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walkDir(fullPath);
-      } else if (entry.name.endsWith('.jsonl')) {
-        totalSize += fs.statSync(fullPath).size;
-      }
-    }
-  };
-
   try {
-    walkDir(sessionProjectsDir);
+    walkJsonlFiles(sessionProjectsDir, (fullPath) => {
+      totalSize += fs.statSync(fullPath).size;
+    });
   } catch (err) {
     logger.debug(
       { groupFolder, err },
@@ -127,9 +129,13 @@ export function getSessionTranscriptSize(groupFolder: string): number {
 
 /**
  * Check whether a group's session transcript exceeds the rotation threshold.
+ * If `knownSize` is provided, uses that instead of re-walking the filesystem.
  */
-export function shouldRotateSession(groupFolder: string): boolean {
-  const size = getSessionTranscriptSize(groupFolder);
+export function shouldRotateSession(
+  groupFolder: string,
+  knownSize?: number,
+): boolean {
+  const size = knownSize ?? getSessionTranscriptSize(groupFolder);
   return size > SESSION_ROTATION_THRESHOLD_BYTES;
 }
 
@@ -138,38 +144,21 @@ export function shouldRotateSession(groupFolder: string): boolean {
  * Finds the most recent transcript file and extracts text content.
  */
 function findLatestTranscript(groupFolder: string): string | null {
-  const sessionProjectsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    groupFolder,
-    '.claude',
-    'projects',
-  );
-
-  if (!fs.existsSync(sessionProjectsDir)) {
-    return null;
-  }
+  const sessionProjectsDir = getSessionProjectsDir(groupFolder);
+  if (!fs.existsSync(sessionProjectsDir)) return null;
 
   // Find the most recently modified .jsonl file
   let latestPath: string | null = null;
   let latestMtime = 0;
 
-  const walkDir = (dir: string) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walkDir(fullPath);
-      } else if (entry.name.endsWith('.jsonl')) {
-        const stat = fs.statSync(fullPath);
-        if (stat.mtimeMs > latestMtime) {
-          latestMtime = stat.mtimeMs;
-          latestPath = fullPath;
-        }
-      }
+  walkJsonlFiles(sessionProjectsDir, (fullPath) => {
+    const stat = fs.statSync(fullPath);
+    if (stat.mtimeMs > latestMtime) {
+      latestMtime = stat.mtimeMs;
+      latestPath = fullPath;
     }
-  };
+  });
 
-  walkDir(sessionProjectsDir);
   return latestPath;
 }
 
@@ -301,24 +290,16 @@ function archiveFullTranscript(
  * subsequent checks.
  */
 function cleanupSessionFiles(groupFolder: string): number {
-  const sessionProjectsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    groupFolder,
-    '.claude',
-    'projects',
-  );
-
-  if (!fs.existsSync(sessionProjectsDir)) {
-    return 0;
-  }
+  const sessionProjectsDir = getSessionProjectsDir(groupFolder);
+  if (!fs.existsSync(sessionProjectsDir)) return 0;
 
   let deletedCount = 0;
-  const walkDir = (dir: string) => {
+
+  const walkAndClean = (dir: string) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        walkDir(fullPath);
+        walkAndClean(fullPath);
         // Remove empty session subdirectories (companion dirs for JSONL files)
         try {
           const remaining = fs.readdirSync(fullPath);
@@ -343,7 +324,7 @@ function cleanupSessionFiles(groupFolder: string): number {
   };
 
   try {
-    walkDir(sessionProjectsDir);
+    walkAndClean(sessionProjectsDir);
   } catch (err) {
     logger.debug(
       { groupFolder, err },
