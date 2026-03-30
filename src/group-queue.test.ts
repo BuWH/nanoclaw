@@ -2,37 +2,20 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 import { GroupQueue } from './group-queue.js';
 
+// Create mock functions that can be accessed in tests
+const mockWriteFileSync = vi.fn();
+const mockMkdirSync = vi.fn();
+const mockRenameSync = vi.fn();
+
 // Mock config to control concurrency limit
 vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   MAX_CONCURRENT_CONTAINERS: 2,
 }));
 
-// Track writeFileSync calls for testing close sentinels.
-// vi.hoisted ensures these variables exist before vi.mock hoists.
-const { mockWriteFileSync, mockMkdirSync, mockRenameSync } = vi.hoisted(() => ({
-  mockWriteFileSync: vi.fn(),
-  mockMkdirSync: vi.fn(),
-  mockRenameSync: vi.fn(),
-}));
-
 // Mock fs operations used by sendMessage/closeStdin
-vi.mock('fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs')>();
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      existsSync: vi.fn(() => false),
-      mkdirSync: mockMkdirSync,
-      writeFileSync: mockWriteFileSync,
-      readFileSync: vi.fn(() => ''),
-      readdirSync: vi.fn(() => []),
-      statSync: vi.fn(() => ({ isDirectory: () => false })),
-      unlinkSync: vi.fn(),
-      rmdirSync: vi.fn(),
-      renameSync: mockRenameSync,
-    },
+vi.mock('fs', () => ({
+  default: {
     existsSync: vi.fn(() => false),
     mkdirSync: mockMkdirSync,
     writeFileSync: mockWriteFileSync,
@@ -42,8 +25,19 @@ vi.mock('fs', async (importOriginal) => {
     unlinkSync: vi.fn(),
     rmdirSync: vi.fn(),
     renameSync: mockRenameSync,
-  };
-});
+    constants: {},
+  },
+  existsSync: vi.fn(() => false),
+  mkdirSync: mockMkdirSync,
+  writeFileSync: mockWriteFileSync,
+  readFileSync: vi.fn(() => ''),
+  readdirSync: vi.fn(() => []),
+  statSync: vi.fn(() => ({ isDirectory: () => false })),
+  unlinkSync: vi.fn(),
+  rmdirSync: vi.fn(),
+  renameSync: mockRenameSync,
+  constants: {},
+}));
 
 describe('GroupQueue', () => {
   let queue: GroupQueue;
