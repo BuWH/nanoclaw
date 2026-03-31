@@ -15,17 +15,16 @@ vi.mock('./logger.js', () => ({
 }));
 
 // Mock execFile to avoid actually calling `op`
-vi.mock('child_process', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('child_process')>();
-  return {
-    ...mod,
-    execFile: vi.fn(),
-  };
+vi.mock('child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('child_process')>('child_process');
+  return { ...actual, execFile: vi.fn() };
 });
 
-const mockExecFile = vi.mocked(execFile);
-
 import { handleOpIpc } from './op-ipc.js';
+
+// Access mock function via vi.mocked()
+const mockExecFile = vi.mocked(execFile);
 
 // ---------------------------------------------------------------------------
 // Test setup

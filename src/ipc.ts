@@ -52,6 +52,7 @@ export interface IpcDeps {
     metrics?: QueueMetrics,
   ) => void;
   onTasksChanged: () => void;
+  getQueueVersion?: () => number;
 }
 
 let ipcWatcherRunning = false;
@@ -65,6 +66,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
+
+  let lastWrittenVersion = -1;
 
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
@@ -201,65 +204,43 @@ export function startIpcWatcher(deps: IpcDeps): void {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               const type = data.type as string;
 
-              // X integration requests are fire-and-forget: delete the IPC
-              // file immediately and run the (potentially slow) script in the
-              // background.  Results are written to x_results/ for the
-              // container to poll — blocking the IPC loop would stall message
-              // delivery and Telegram bot commands.
-              if (type?.startsWith('x_')) {
-                fs.unlinkSync(filePath);
-                handleXIpc(data, sourceGroup, isMain, DATA_DIR).catch((err) => {
-                  logger.error(
-                    { file, sourceGroup, err },
-                    'Background X IPC handler error',
-                  );
-                });
-                continue;
-              }
+              // Fire-and-forget handlers: delete the IPC file immediately and
+              // run the (potentially slow) handler in the background.  Results
+              // are written to <prefix>_results/ for the container to poll --
+              // blocking the IPC loop would stall message delivery.
+              const fireAndForgetHandlers: Array<{
+                prefix: string;
+                handler: (
+                  data: any,
+                  sourceGroup: string,
+                  isMain: boolean,
+                  dataDir: string,
+                ) => Promise<boolean | void>;
+                label: string;
+              }> = [
+                { prefix: 'x_', handler: handleXIpc, label: 'X' },
+                { prefix: 'op_', handler: handleOpIpc, label: '1Password' },
+                {
+                  prefix: 'chrome_',
+                  handler: handleChromeIpc,
+                  label: 'Chrome',
+                },
+                { prefix: 'codex_', handler: handleCodexIpc, label: 'Codex' },
+              ];
 
-              // 1Password credential requests: same fire-and-forget pattern.
-              // Results are written to op_results/ for the container to poll.
-              if (type?.startsWith('op_')) {
+              const matched = fireAndForgetHandlers.find((h) =>
+                type?.startsWith(h.prefix),
+              );
+              if (matched) {
                 fs.unlinkSync(filePath);
-                handleOpIpc(data, sourceGroup, isMain, DATA_DIR).catch(
-                  (err) => {
+                matched
+                  .handler(data, sourceGroup, isMain, DATA_DIR)
+                  .catch((err) => {
                     logger.error(
                       { file, sourceGroup, err },
-                      'Background 1Password IPC handler error',
+                      `Background ${matched.label} IPC handler error`,
                     );
-                  },
-                );
-                continue;
-              }
-
-              // Chrome cookie export requests: fire-and-forget pattern.
-              // Exports host Chrome cookies to browser-state/storage.json.
-              // Results are written to chrome_results/ for the container to poll.
-              if (type?.startsWith('chrome_')) {
-                fs.unlinkSync(filePath);
-                handleChromeIpc(data, sourceGroup, isMain, DATA_DIR).catch(
-                  (err) => {
-                    logger.error(
-                      { file, sourceGroup, err },
-                      'Background Chrome IPC handler error',
-                    );
-                  },
-                );
-                continue;
-              }
-
-              // Codex PR review requests: fire-and-forget pattern.
-              // Results are written to codex_results/ for the container to poll.
-              if (type?.startsWith('codex_')) {
-                fs.unlinkSync(filePath);
-                handleCodexIpc(data, sourceGroup, isMain, DATA_DIR).catch(
-                  (err) => {
-                    logger.error(
-                      { file, sourceGroup, err },
-                      'Background Codex IPC handler error',
-                    );
-                  },
-                );
+                  });
                 continue;
               }
 
@@ -297,23 +278,28 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
     // Write queue status snapshot to all active group IPC dirs so containers
     // can read real-time execution state via the get_queue_status MCP tool.
+    // Skip writing if the queue state hasn't changed since the last snapshot.
     if (deps.getQueueStatus && deps.writeQueueStatusSnapshot) {
-      const queueEntries = deps.getQueueStatus();
-      const groups = deps.registeredGroups();
-      for (const sourceGroup of groupFolders) {
-        const isMain = folderIsMain.get(sourceGroup) === true;
-        try {
-          deps.writeQueueStatusSnapshot(
-            sourceGroup,
-            isMain,
-            queueEntries,
-            groups,
-          );
-        } catch (err) {
-          logger.debug(
-            { sourceGroup, err },
-            'Failed to write queue status snapshot',
-          );
+      const currentVersion = deps.getQueueVersion?.() ?? -1;
+      if (currentVersion !== lastWrittenVersion) {
+        lastWrittenVersion = currentVersion;
+        const queueEntries = deps.getQueueStatus();
+        const groups = deps.registeredGroups();
+        for (const sourceGroup of groupFolders) {
+          const isMain = folderIsMain.get(sourceGroup) === true;
+          try {
+            deps.writeQueueStatusSnapshot(
+              sourceGroup,
+              isMain,
+              queueEntries,
+              groups,
+            );
+          } catch (err) {
+            logger.debug(
+              { sourceGroup, err },
+              'Failed to write queue status snapshot',
+            );
+          }
         }
       }
     }
@@ -702,19 +688,7 @@ export async function processTaskIpc(
       }
       break;
 
-    default: {
-      const handled = await handleXIpc(data, sourceGroup, isMain, DATA_DIR);
-      if (!handled) {
-        const handledOp = await handleOpIpc(
-          data,
-          sourceGroup,
-          isMain,
-          DATA_DIR,
-        );
-        if (!handledOp) {
-          logger.warn({ type: data.type }, 'Unknown IPC task type');
-        }
-      }
-    }
+    default:
+      logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
 }

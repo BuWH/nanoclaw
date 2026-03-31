@@ -15,19 +15,17 @@ vi.mock('./logger.js', () => ({
 }));
 
 // Mock child_process to avoid actually calling `uv`
-vi.mock('child_process', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('child_process')>();
-  return {
-    ...mod,
-    execFile: vi.fn(),
-    execFileSync: vi.fn(),
-  };
+vi.mock('child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('child_process')>('child_process');
+  return { ...actual, execFile: vi.fn(), execFileSync: vi.fn() };
 });
 
+import { handleChromeIpc } from './chrome-ipc.js';
+
+// Access mock functions via vi.mocked()
 const mockExecFile = vi.mocked(execFile);
 const mockExecFileSync = vi.mocked(execFileSync);
-
-import { handleChromeIpc } from './chrome-ipc.js';
 
 // ---------------------------------------------------------------------------
 // Test setup

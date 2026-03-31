@@ -307,7 +307,6 @@ async function runTask(
             { taskId: task.id },
             'Task container reported success, scheduling close',
           );
-          deps.queue.notifyTaskIdle(task.chat_jid);
           scheduleClose();
         }
         if (streamedOutput.status === 'error') {

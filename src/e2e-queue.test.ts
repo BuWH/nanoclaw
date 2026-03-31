@@ -55,20 +55,17 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+// Mock fs operations.
+// Uses vi.importActual so no external const variables are referenced
+// (vitest hoists vi.mock to top of file, making const refs undefined).
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
     default: {
       ...actual,
-      existsSync: vi.fn(() => false),
       mkdirSync: vi.fn(),
       writeFileSync: vi.fn(),
-      readFileSync: vi.fn(() => ''),
-      readdirSync: vi.fn(() => []),
-      statSync: vi.fn(() => ({ isDirectory: () => false })),
-      copyFileSync: vi.fn(),
-      cpSync: vi.fn(),
       renameSync: vi.fn(),
     },
   };
@@ -144,29 +141,24 @@ function emitOutput(
 const spawnedProcesses = new Map<string, FakeProcess>();
 let spawnOrder: string[] = [];
 
-vi.mock('child_process', async () => {
-  const actual =
-    await vi.importActual<typeof import('child_process')>('child_process');
-  return {
-    ...actual,
-    spawn: vi.fn((_cmd: string, args: string[]) => {
-      // Extract container name from args: ['run', '-i', '--rm', '--name', 'nanoclaw-xxx', ...]
-      const nameIdx = args.indexOf('--name');
-      const containerName =
-        nameIdx !== -1 ? args[nameIdx + 1] : `unknown-${Date.now()}`;
-      const proc = createFakeProcess(Math.floor(Math.random() * 100000));
-      spawnedProcesses.set(containerName, proc);
-      spawnOrder.push(containerName);
-      return proc;
-    }),
-    exec: vi.fn(
-      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-        if (cb) cb(null);
-        return new EventEmitter();
-      },
-    ),
-  };
-});
+vi.mock('child_process', () => ({
+  spawn: vi.fn((_cmd: string, args: string[]) => {
+    // Extract container name from args: ['run', '-i', '--rm', '--name', 'nanoclaw-xxx', ...]
+    const nameIdx = args.indexOf('--name');
+    const containerName =
+      nameIdx !== -1 ? args[nameIdx + 1] : `unknown-${Date.now()}`;
+    const proc = createFakeProcess(Math.floor(Math.random() * 100000));
+    spawnedProcesses.set(containerName, proc);
+    spawnOrder.push(containerName);
+    return proc;
+  }),
+  exec: vi.fn(
+    (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+      if (cb) cb(null);
+      return new EventEmitter();
+    },
+  ),
+}));
 
 // --- Imports (after mocks) ---
 

@@ -726,10 +726,10 @@ async function runAgent(
   // After OOM crashes the container creates a new session but the old JSONL
   // files remain on disk, inflating getSessionTranscriptSize() and eventually
   // triggering unnecessary rotation that discards the current valid session.
-  cleanupOrphanSessionFiles(group.folder, sessionId);
+  const { survivingSize } = cleanupOrphanSessionFiles(group.folder, sessionId);
 
   // Auto-rotate session if transcript on disk is too large
-  if (sessionId && shouldRotateSession(group.folder)) {
+  if (sessionId && shouldRotateSession(group.folder, survivingSize)) {
     const result = rotateSession(group.folder, sessionId);
     if (result.rotated) {
       delete sessions[group.folder];
@@ -1215,7 +1215,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     stopXHealthCheck?.();
     proxyServer.close();
-    await queue.shutdown(10000);
+    await queue.shutdown();
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
   };
@@ -1412,12 +1412,13 @@ async function main(): Promise<void> {
       writeGroupsSnapshot(gf, im, ag, rj),
     restart: async () => {
       logger.info('Restart requested — shutting down for launchd to restart');
-      await queue.shutdown(10000);
+      await queue.shutdown();
       for (const ch of channels) await ch.disconnect();
       process.exit(0);
     },
     triggerSchedulerDrain,
     getQueueStatus: () => queue.getStatus(),
+    getQueueVersion: () => queue.getVersion(),
     writeQueueStatusSnapshot,
     onTasksChanged: () => {
       const tasks = getAllTasks();

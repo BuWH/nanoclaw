@@ -22,6 +22,7 @@ import {
   shouldRotateSession,
   rotateSession,
   cleanupOrphanSessionFiles,
+  type CleanupResult,
 } from './session-rotation.js';
 
 const TEST_DIR = '/tmp/nanoclaw-test-rotation';
@@ -237,12 +238,16 @@ describe('session-rotation', () => {
       return filePath;
     }
 
-    it('returns 0 when no current session ID', () => {
-      expect(cleanupOrphanSessionFiles('test-group', undefined)).toBe(0);
+    it('returns 0 deleted when no current session ID', () => {
+      const result = cleanupOrphanSessionFiles('test-group', undefined);
+      expect(result.deletedCount).toBe(0);
+      expect(result.survivingSize).toBe(0);
     });
 
-    it('returns 0 when session directory does not exist', () => {
-      expect(cleanupOrphanSessionFiles('nonexistent', 'session-abc')).toBe(0);
+    it('returns 0 deleted when session directory does not exist', () => {
+      const result = cleanupOrphanSessionFiles('nonexistent', 'session-abc');
+      expect(result.deletedCount).toBe(0);
+      expect(result.survivingSize).toBe(0);
     });
 
     it('deletes orphan JSONL files but keeps the current session', () => {
@@ -258,9 +263,10 @@ describe('session-rotation', () => {
       expect(fs.existsSync(orphan1Path)).toBe(true);
       expect(fs.existsSync(orphan2Path)).toBe(true);
 
-      const deleted = cleanupOrphanSessionFiles('test-group', currentId);
+      const result = cleanupOrphanSessionFiles('test-group', currentId);
 
-      expect(deleted).toBe(2);
+      expect(result.deletedCount).toBe(2);
+      expect(result.survivingSize).toBe(500);
       expect(fs.existsSync(currentPath)).toBe(true);
       expect(fs.existsSync(orphan1Path)).toBe(false);
       expect(fs.existsSync(orphan2Path)).toBe(false);
@@ -270,8 +276,8 @@ describe('session-rotation', () => {
       const currentId = 'only-session';
       createSessionFile('test-group', currentId);
 
-      const deleted = cleanupOrphanSessionFiles('test-group', currentId);
-      expect(deleted).toBe(0);
+      const result = cleanupOrphanSessionFiles('test-group', currentId);
+      expect(result.deletedCount).toBe(0);
     });
 
     it('does not delete non-JSONL files', () => {
@@ -293,7 +299,7 @@ describe('session-rotation', () => {
       expect(fs.existsSync(otherFile)).toBe(true);
     });
 
-    it('reduces getSessionTranscriptSize after cleanup', () => {
+    it('reduces getSessionTranscriptSize after cleanup and returns surviving size', () => {
       const currentId = 'current';
       createSessionFile('test-group', currentId, 500);
       createSessionFile('test-group', 'orphan-big', 50_000);
@@ -301,11 +307,13 @@ describe('session-rotation', () => {
       const sizeBefore = getSessionTranscriptSize('test-group');
       expect(sizeBefore).toBeGreaterThan(50_000);
 
-      cleanupOrphanSessionFiles('test-group', currentId);
+      const result = cleanupOrphanSessionFiles('test-group', currentId);
 
       const sizeAfter = getSessionTranscriptSize('test-group');
       expect(sizeAfter).toBeLessThan(1000);
       expect(sizeAfter).toBeLessThan(sizeBefore);
+      // survivingSize should match post-cleanup size
+      expect(result.survivingSize).toBe(sizeAfter);
     });
 
     it('prevents false rotation trigger from orphan accumulation', () => {

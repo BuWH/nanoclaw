@@ -51,22 +51,19 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-vi.mock('fs', async () => {
-  const actual = await vi.importActual<typeof import('fs')>('fs');
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      existsSync: vi.fn(() => false),
-      mkdirSync: vi.fn(),
-      writeFileSync: vi.fn(),
-      readFileSync: vi.fn(() => ''),
-      readdirSync: vi.fn(() => []),
-      statSync: vi.fn(() => ({ isDirectory: () => false })),
-      copyFileSync: vi.fn(),
-      cpSync: vi.fn(),
-    },
+vi.mock('fs', () => {
+  const fsMock = {
+    existsSync: vi.fn(() => false),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    readFileSync: vi.fn(() => ''),
+    readdirSync: vi.fn(() => []),
+    statSync: vi.fn(() => ({ isDirectory: () => false })),
+    unlinkSync: vi.fn(),
+    rmdirSync: vi.fn(),
+    constants: {},
   };
+  return { ...fsMock, default: fsMock };
 });
 
 vi.mock('./mount-security.js', () => ({
@@ -98,20 +95,15 @@ function createFakeProcess() {
 
 let fakeProc: ReturnType<typeof createFakeProcess>;
 
-vi.mock('child_process', async () => {
-  const actual =
-    await vi.importActual<typeof import('child_process')>('child_process');
-  return {
-    ...actual,
-    spawn: vi.fn(() => fakeProc),
-    exec: vi.fn(
-      (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
-        if (cb) cb(null);
-        return new EventEmitter();
-      },
-    ),
-  };
-});
+vi.mock('child_process', () => ({
+  spawn: vi.fn(() => fakeProc),
+  exec: vi.fn(
+    (_cmd: string, _opts: unknown, cb?: (err: Error | null) => void) => {
+      if (cb) cb(null);
+      return new EventEmitter();
+    },
+  ),
+}));
 
 // --- Imports (must come after vi.mock calls) ---
 
@@ -260,7 +252,7 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
     const pipelinePromise = runPipeline(testGroup, TEST_CHAT_JID, channel, '');
 
     // Let spawn happen
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Fake container emits success
     emitOutput(fakeProc, {
@@ -269,11 +261,11 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
       newSessionId: 'session-001',
     });
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container exits normally
     fakeProc.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const { output, sentMessages } = await pipelinePromise;
 
@@ -325,13 +317,13 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
 
     const pipelinePromise = runPipeline(testGroup, TEST_CHAT_JID, channel, '');
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Emit output and close
     emitOutput(fakeProc, { status: 'success', result: 'Got it!' });
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
     fakeProc.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     await pipelinePromise;
 
@@ -361,7 +353,7 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
 
     const pipelinePromise = runPipeline(testGroup, TEST_CHAT_JID, channel, '');
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container emits response with internal tags
     emitOutput(fakeProc, {
@@ -369,9 +361,9 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
       result: '<internal>thinking step</internal>The answer is 4',
     });
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
     fakeProc.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const { sentMessages } = await pipelinePromise;
 
@@ -396,11 +388,11 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
 
     const pipelinePromise = runPipeline(testGroup, TEST_CHAT_JID, channel, '');
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // Container exits with error code (no output emitted)
     fakeProc.emit('close', 1);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const { output, sentMessages } = await pipelinePromise;
 
@@ -421,15 +413,15 @@ describe('E2E: Message Receive -> Container Process -> Reply', () => {
 
     const pipelinePromise = runPipeline(testGroup, TEST_CHAT_JID, channel, '');
 
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     // No output emitted -- advance past FIRST_OUTPUT_TIMEOUT (3000ms)
     // This triggers the first-output timeout, which calls killOnTimeout()
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTime(3000);
 
     // The kill triggers close event
     fakeProc.emit('close', 137);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTime(10);
 
     const { output, sentMessages } = await pipelinePromise;
 
