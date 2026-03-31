@@ -72,8 +72,11 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
 );
 // Note: --cpus flag is not supported by Apple Container runtime.
 // When using Apple Container, set CONTAINER_CPU_LIMIT='' to disable.
-export const CONTAINER_MEMORY_LIMIT =
-  process.env.CONTAINER_MEMORY_LIMIT || '8g';
+// Empty string disables --memory flag entirely.
+// New sessions need 6-10GB+ for context rebuild; resume sessions only ~300MB.
+// With a single container on a 16GB host, a hard cap causes OOM cycles
+// when a crash forces a new session. Better to let Docker use available memory.
+export const CONTAINER_MEMORY_LIMIT = process.env.CONTAINER_MEMORY_LIMIT || '';
 export const CONTAINER_CPU_LIMIT = process.env.CONTAINER_CPU_LIMIT || '2';
 
 function escapeRegex(str: string): string {
