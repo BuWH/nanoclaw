@@ -51,17 +51,20 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-vi.mock('fs', () => ({
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-  writeFileSync: vi.fn(),
-  readFileSync: vi.fn(() => ''),
-  readdirSync: vi.fn(() => []),
-  statSync: vi.fn(() => ({ isDirectory: () => false })),
-  unlinkSync: vi.fn(),
-  rmdirSync: vi.fn(),
-  constants: {},
-}));
+vi.mock('fs', () => {
+  const fsMock = {
+    existsSync: vi.fn(() => false),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    readFileSync: vi.fn(() => ''),
+    readdirSync: vi.fn(() => []),
+    statSync: vi.fn(() => ({ isDirectory: () => false })),
+    unlinkSync: vi.fn(),
+    rmdirSync: vi.fn(),
+    constants: {},
+  };
+  return { ...fsMock, default: fsMock };
+});
 
 vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),

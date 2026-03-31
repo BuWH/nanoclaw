@@ -4,9 +4,6 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-// Create mock function that can be accessed in tests
-const mockExecFile = vi.fn();
-
 // Mock logger before importing module under test
 vi.mock('./logger.js', () => ({
   logger: {
@@ -18,11 +15,16 @@ vi.mock('./logger.js', () => ({
 }));
 
 // Mock execFile to avoid actually calling `op`
-vi.mock('child_process', () => ({
-  execFile: mockExecFile,
-}));
+vi.mock('child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('child_process')>('child_process');
+  return { ...actual, execFile: vi.fn() };
+});
 
 import { handleOpIpc } from './op-ipc.js';
+
+// Access mock function via vi.mocked()
+const mockExecFile = vi.mocked(execFile);
 
 // ---------------------------------------------------------------------------
 // Test setup
