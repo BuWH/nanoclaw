@@ -1546,9 +1546,15 @@ async function main(): Promise<void> {
         );
       }
 
-      mainChannel.sendMessage(mainJid, msg).catch((err) => {
-        logger.warn({ err }, 'Failed to send startup notification');
-      });
+      // Only notify via Telegram when there's actual update content.
+      // Routine restarts (sleep/wake, manual /restart) are silent.
+      if (changelog) {
+        mainChannel.sendMessage(mainJid, msg).catch((err) => {
+          logger.warn({ err }, 'Failed to send startup notification');
+        });
+      } else {
+        logger.info('Startup notification suppressed (no changelog)');
+      }
     }
   }
 }
