@@ -24,9 +24,9 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-// Mock runScript from x-ipc.js
+// Mock runScript from opencli-ipc.js
 const mockRunScript = vi.fn();
-vi.mock('./x-ipc.js', () => ({
+vi.mock('./opencli-ipc.js', () => ({
   runScript: (...args: unknown[]) => mockRunScript(...args),
 }));
 

@@ -11,7 +11,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 import type { ButtonRows } from './types.js';
-import { handleXIpc } from './x-ipc.js';
+import { handleOpencliIpc } from './opencli-ipc.js';
 import { handleOpIpc } from './op-ipc.js';
 import { handleChromeIpc } from './chrome-ipc.js';
 import { handleCodexIpc } from './codex-ipc.js';
@@ -218,7 +218,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 ) => Promise<boolean | void>;
                 label: string;
               }> = [
-                { prefix: 'x_', handler: handleXIpc, label: 'X' },
+                {
+                  prefix: 'opencli_',
+                  handler: handleOpencliIpc,
+                  label: 'OpenCLI',
+                },
                 { prefix: 'op_', handler: handleOpIpc, label: '1Password' },
                 {
                   prefix: 'chrome_',
