@@ -223,6 +223,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   handler: handleOpencliIpc,
                   label: 'OpenCLI',
                 },
+                {
+                  prefix: 'x_',
+                  handler: handleOpencliIpc,
+                  label: 'OpenCLI (legacy X)',
+                },
                 { prefix: 'op_', handler: handleOpIpc, label: '1Password' },
                 {
                   prefix: 'chrome_',

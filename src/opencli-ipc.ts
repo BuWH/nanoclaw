@@ -36,7 +36,7 @@ interface SkillResult {
 }
 
 const SCRIPT_TIMEOUT_MS = 120_000;
-const OPENCLI_BIN = '/Users/wenhe/.nvm/versions/node/v20.9.0/bin/opencli';
+const OPENCLI_BIN = process.env.OPENCLI_BIN || 'opencli';
 
 // Run an opencli CLI command and parse JSON output
 export async function runOpencli(
@@ -50,7 +50,7 @@ export async function runOpencli(
       cwd: PROJECT_ROOT,
       env: {
         ...process.env,
-        PATH: `/Users/wenhe/.nvm/versions/node/v20.9.0/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
+        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -281,13 +281,20 @@ function writeResult(
   sourceGroup: string,
   requestId: string,
   result: SkillResult,
+  originalType?: string,
 ): void {
   const resultsDir = path.join(dataDir, 'ipc', sourceGroup, 'opencli_results');
   fs.mkdirSync(resultsDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(resultsDir, `${requestId}.json`),
-    JSON.stringify(result),
-  );
+  const payload = JSON.stringify(result);
+  fs.writeFileSync(path.join(resultsDir, `${requestId}.json`), payload);
+
+  // Backward compatibility: also write to x_results/ if the original request
+  // came via a legacy x_* type so old containers can find the result.
+  if (originalType?.startsWith('x_')) {
+    const legacyDir = path.join(dataDir, 'ipc', sourceGroup, 'x_results');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, `${requestId}.json`), payload);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -360,9 +367,29 @@ export async function handleOpencliIpc(
   isMain: boolean,
   dataDir: string,
 ): Promise<boolean> {
-  const type = data.type as string;
+  let type = data.type as string;
+  const originalType = type;
 
-  // Only handle opencli_* types
+  // Backward compatibility: remap legacy x_* types to opencli_twitter_*
+  const X_COMPAT_MAP: Record<string, string> = {
+    x_post: 'opencli_twitter_post',
+    x_like: 'opencli_twitter_like',
+    x_reply: 'opencli_twitter_reply',
+    x_retweet: 'opencli_twitter_retweet',
+    x_quote: 'opencli_twitter_quote',
+    x_scrape_tweet: 'opencli_twitter_scrape',
+    x_scrape_profile: 'opencli_twitter_profile',
+    x_search_tweets: 'opencli_twitter_search',
+  };
+  if (type && X_COMPAT_MAP[type]) {
+    logger.info(
+      { oldType: type, newType: X_COMPAT_MAP[type] },
+      'Remapped legacy x_* IPC type to opencli_*',
+    );
+    type = X_COMPAT_MAP[type];
+  }
+
+  // Handle opencli_* types (and remapped x_* types)
   if (!type?.startsWith('opencli_')) {
     return false;
   }
@@ -404,6 +431,10 @@ export async function handleOpencliIpc(
         }
         const timeout = (data.timeoutMs as number) ?? SCRIPT_TIMEOUT_MS;
         result = await runOpencli(allArgs, timeout);
+        // Serialize data into message so MCP callers see the output
+        if (result.success && !result.message && result.data != null) {
+          result.message = JSON.stringify(result.data, null, 2);
+        }
       }
       break;
 
@@ -692,6 +723,9 @@ export async function handleOpencliIpc(
           '-f',
           'json',
         ]);
+        if (result.success && !result.message && result.data != null) {
+          result.message = JSON.stringify(result.data, null, 2);
+        }
       }
       break;
 
@@ -708,6 +742,9 @@ export async function handleOpencliIpc(
         '-f',
         'json',
       ]);
+      if (result.success && !result.message && result.data != null) {
+        result.message = JSON.stringify(result.data, null, 2);
+      }
       break;
 
     // ----- Xiaohongshu: user -----
@@ -727,6 +764,9 @@ export async function handleOpencliIpc(
           '-f',
           'json',
         ]);
+        if (result.success && !result.message && result.data != null) {
+          result.message = JSON.stringify(result.data, null, 2);
+        }
       }
       break;
 
@@ -734,7 +774,7 @@ export async function handleOpencliIpc(
       return false;
   }
 
-  writeResult(dataDir, sourceGroup, requestId, result);
+  writeResult(dataDir, sourceGroup, requestId, result, originalType);
   const requestDurationMs = Date.now() - requestStart;
   if (result.success) {
     logger.info(
