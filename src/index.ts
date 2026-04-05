@@ -1546,9 +1546,55 @@ async function main(): Promise<void> {
         );
       }
 
-      // Only notify via Telegram when there's actual update content.
-      // Routine restarts (sleep/wake, manual /restart) are silent.
-      if (changelog) {
+      // Detect code changes even without a pre-update marker (e.g. manual
+      // merge + kickstart, or rollback recovery). Compare current HEAD to the
+      // last announced HEAD: if they differ, the code has changed and the user
+      // should be notified.
+      let codeChanged = !!changelog;
+      if (!codeChanged) {
+        try {
+          const currentHead = execSync('git rev-parse --short HEAD', {
+            cwd: process.cwd(),
+            encoding: 'utf-8',
+            stdio: 'pipe',
+          }).trim();
+          let lastAnnounced = '';
+          try {
+            lastAnnounced = fs
+              .readFileSync(LAST_ANNOUNCED_HEAD_PATH, 'utf-8')
+              .trim()
+              .slice(0, currentHead.length);
+          } catch {
+            /* file doesn't exist yet — first boot, always notify */
+            codeChanged = true;
+          }
+          if (!codeChanged && currentHead !== lastAnnounced) {
+            codeChanged = true;
+            logger.info(
+              { currentHead, lastAnnounced },
+              'Code changed since last announcement (no marker file)',
+            );
+            // Record so we don't re-announce on next routine restart
+            try {
+              const fullHead = execSync('git rev-parse HEAD', {
+                cwd: process.cwd(),
+                encoding: 'utf-8',
+                stdio: 'pipe',
+              }).trim();
+              fs.mkdirSync(path.dirname(LAST_ANNOUNCED_HEAD_PATH), {
+                recursive: true,
+              });
+              fs.writeFileSync(LAST_ANNOUNCED_HEAD_PATH, fullHead);
+            } catch {
+              /* best effort */
+            }
+          }
+        } catch {
+          /* git not available, skip detection */
+        }
+      }
+
+      if (codeChanged) {
         mainChannel.sendMessage(mainJid, msg).catch((err) => {
           logger.warn({ err }, 'Failed to send startup notification');
         });
