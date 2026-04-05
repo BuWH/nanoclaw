@@ -499,6 +499,13 @@ export function startAutoUpdateLoop(queue?: QueueHandle): void {
             { rolledBackTo: knownGood },
             'Rollback successful, continuing without restart',
           );
+          // Clean up pre-update marker — the update failed, so the next
+          // boot shouldn't try to compute a changelog from a stale SHA.
+          try {
+            fs.unlinkSync(PRE_UPDATE_HEAD_PATH);
+          } catch {
+            /* may not exist */
+          }
           if (queue) queue.unquiesce();
           return; // Don't exit — we're back on known-good code
         } catch (rollbackErr) {
