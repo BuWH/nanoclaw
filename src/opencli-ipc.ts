@@ -356,6 +356,104 @@ function formatThreadTweet(
   return lines.join('\n');
 }
 
+// Map an opencli_* IPC type to opencli CLI arguments with input validation.
+interface OpencliMapping {
+  args?: string[];
+  error?: string;
+}
+function mapTypeToOpencliArgs(
+  type: string,
+  data: Record<string, unknown>,
+): OpencliMapping | null {
+  if (type === 'opencli_twitter_scrape') {
+    if (!data.tweetUrl) return { error: 'Missing tweetUrl' };
+    const tweetId = extractTweetId((data.tweetUrl as string) || '');
+    const limit = data.includeReplies
+      ? ((data.maxReplies as number) ?? 10) + 1
+      : 1;
+    return {
+      args: [
+        'twitter',
+        'thread',
+        tweetId || (data.tweetUrl as string),
+        '--limit',
+        String(limit),
+        '-f',
+        'json',
+      ],
+    };
+  }
+  if (type === 'opencli_twitter_profile') {
+    if (!data.username) return { error: 'Missing username' };
+    return {
+      args: [
+        'twitter',
+        'profile',
+        (data.username as string).replace(/^@/, ''),
+        '-f',
+        'json',
+      ],
+    };
+  }
+  if (type === 'opencli_twitter_post') {
+    if (!data.content) return { error: 'Missing content' };
+    return { args: ['twitter', 'post', data.content as string, '-f', 'json'] };
+  }
+  if (type === 'opencli_twitter_like') {
+    if (!data.tweetUrl) return { error: 'Missing tweetUrl' };
+    return { args: ['twitter', 'like', data.tweetUrl as string, '-f', 'json'] };
+  }
+  if (type === 'opencli_twitter_reply') {
+    if (!data.tweetUrl || !data.content)
+      return { error: 'Missing tweetUrl or content' };
+    return {
+      args: [
+        'twitter',
+        'reply',
+        data.tweetUrl as string,
+        data.content as string,
+        '-f',
+        'json',
+      ],
+    };
+  }
+  if (type === 'opencli_xhs_search') {
+    if (!data.query) return { error: 'Missing query' };
+    return {
+      args: [
+        'xiaohongshu',
+        'search',
+        data.query as string,
+        '--limit',
+        String((data.maxNotes as number) ?? 20),
+        '-f',
+        'json',
+      ],
+    };
+  }
+  if (type === 'opencli_xhs_note') {
+    if (!data.noteUrl) return { error: 'Missing noteUrl' };
+    return {
+      args: ['xiaohongshu', 'note', data.noteUrl as string, '-f', 'json'],
+    };
+  }
+  if (type === 'opencli_xhs_user') {
+    if (!data.userId) return { error: 'Missing userId' };
+    return {
+      args: [
+        'xiaohongshu',
+        'user',
+        data.userId as string,
+        '--limit',
+        String((data.maxNotes as number) ?? 20),
+        '-f',
+        'json',
+      ],
+    };
+  }
+  return null;
+}
+
 /**
  * Handle OpenCLI integration IPC messages.
  *
@@ -520,15 +618,29 @@ export async function handleOpencliIpc(
       }
       break;
 
-    // ----- Twitter: scrape tweet (with cache) -----
-    case 'opencli_twitter_scrape':
-      if (!data.tweetUrl) {
-        result = { success: false, message: 'Missing tweetUrl' };
+    // ----- Catch-all for non-dedicated opencli types -----
+    default: {
+      if (type === 'opencli_twitter_retweet') {
+        if (!data.tweetUrl) {
+          result = { success: false, message: 'Missing tweetUrl' };
+          break;
+        }
+        result = await runScript('retweet', { tweetUrl: data.tweetUrl });
         break;
       }
-      {
+      if (type === 'opencli_twitter_quote') {
+        if (!data.tweetUrl || !data.comment) {
+          result = { success: false, message: 'Missing tweetUrl or comment' };
+          break;
+        }
+        result = await runScript('quote', {
+          tweetUrl: data.tweetUrl,
+          comment: data.comment,
+        });
+        break;
+      }
+      if (type === 'opencli_twitter_scrape' && data.tweetUrl) {
         const tweetId = extractTweetId(data.tweetUrl as string);
-        // Serve from cache when not requesting replies (replies are never cached)
         if (tweetId && !data.includeReplies) {
           const cached = getCachedTweet(tweetId);
           if (cached) {
@@ -541,237 +653,21 @@ export async function handleOpencliIpc(
             break;
           }
         }
-
-        // Use opencli twitter thread to fetch the tweet
-        const maxReplies = (data.maxReplies as number) ?? 10;
-        const limit = data.includeReplies ? maxReplies + 1 : 1;
-        const threadResult = await runOpencli([
-          'twitter',
-          'thread',
-          tweetId || (data.tweetUrl as string),
-          '--limit',
-          String(limit),
-          '-f',
-          'json',
-        ]);
-
-        if (!threadResult.success) {
-          result = threadResult;
-          break;
-        }
-
-        const thread = (
-          Array.isArray(threadResult.data) ? threadResult.data : []
-        ) as OpencliThreadTweet[];
-
-        if (thread.length === 0) {
-          result = { success: false, message: 'No tweet data returned.' };
-          break;
-        }
-
-        const mainTweet = thread[0];
-        const replies = thread.slice(1);
-
-        // Cache the main tweet
-        cacheTweetFromOpencliThread(tweetId, thread);
-
-        result = {
-          success: true,
-          message: formatThreadTweet(
-            mainTweet,
-            data.includeReplies ? replies : [],
-          ),
-          data: { mainTweet, replies },
-        };
       }
-      break;
-
-    // ----- Twitter: profile -----
-    case 'opencli_twitter_profile':
-      if (!data.username) {
-        result = { success: false, message: 'Missing username' };
+      const mapped = mapTypeToOpencliArgs(type, data);
+      if (!mapped) {
+        return false;
+      }
+      if (mapped.error) {
+        result = { success: false, message: mapped.error };
         break;
       }
-      {
-        const username = (data.username as string).replace(/^@/, '');
-        const profileResult = await runOpencli([
-          'twitter',
-          'profile',
-          username,
-          '-f',
-          'json',
-        ]);
-
-        if (!profileResult.success) {
-          result = profileResult;
-          break;
-        }
-
-        const profileData = profileResult.data as Record<string, unknown>;
-        const msg = profileData
-          ? [
-              `@${profileData.screen_name || username}`,
-              profileData.name ? `Name: ${profileData.name}` : null,
-              profileData.bio ? `Bio: ${profileData.bio}` : null,
-              profileData.location ? `Location: ${profileData.location}` : null,
-              profileData.url ? `URL: ${profileData.url}` : null,
-              `Followers: ${profileData.followers ?? 0} | Following: ${profileData.following ?? 0}`,
-              `Tweets: ${profileData.tweets ?? 0} | Likes: ${profileData.likes ?? 0}`,
-              profileData.verified ? 'Verified: Yes' : null,
-              profileData.created_at
-                ? `Joined: ${profileData.created_at}`
-                : null,
-            ]
-              .filter(Boolean)
-              .join('\n')
-          : 'Profile data not available.';
-
-        result = { success: true, message: msg, data: profileData };
-      }
-      break;
-
-    // ----- Twitter: post -----
-    case 'opencli_twitter_post':
-      if (!data.content) {
-        result = { success: false, message: 'Missing content' };
-        break;
-      }
-      result = await runOpencli([
-        'twitter',
-        'post',
-        data.content as string,
-        '-f',
-        'json',
-      ]);
-      if (result.success) {
-        result.message = result.message || 'Tweet posted successfully.';
-      }
-      break;
-
-    // ----- Twitter: like -----
-    case 'opencli_twitter_like':
-      if (!data.tweetUrl) {
-        result = { success: false, message: 'Missing tweetUrl' };
-        break;
-      }
-      result = await runOpencli([
-        'twitter',
-        'like',
-        data.tweetUrl as string,
-        '-f',
-        'json',
-      ]);
-      if (result.success) {
-        result.message = result.message || 'Tweet liked successfully.';
-      }
-      break;
-
-    // ----- Twitter: reply -----
-    case 'opencli_twitter_reply':
-      if (!data.tweetUrl || !data.content) {
-        result = { success: false, message: 'Missing tweetUrl or content' };
-        break;
-      }
-      result = await runOpencli([
-        'twitter',
-        'reply',
-        data.tweetUrl as string,
-        data.content as string,
-        '-f',
-        'json',
-      ]);
-      if (result.success) {
-        result.message = result.message || 'Reply posted successfully.';
-      }
-      break;
-
-    // ----- Twitter: retweet (legacy Playwright script) -----
-    case 'opencli_twitter_retweet':
-      if (!data.tweetUrl) {
-        result = { success: false, message: 'Missing tweetUrl' };
-        break;
-      }
-      result = await runScript('retweet', { tweetUrl: data.tweetUrl });
-      break;
-
-    // ----- Twitter: quote (legacy Playwright script) -----
-    case 'opencli_twitter_quote':
-      if (!data.tweetUrl || !data.comment) {
-        result = { success: false, message: 'Missing tweetUrl or comment' };
-        break;
-      }
-      result = await runScript('quote', {
-        tweetUrl: data.tweetUrl,
-        comment: data.comment,
-      });
-      break;
-
-    // ----- Xiaohongshu: search -----
-    case 'opencli_xhs_search':
-      if (!data.query) {
-        result = { success: false, message: 'Missing query' };
-        break;
-      }
-      {
-        const maxNotes = (data.maxNotes as number) ?? 20;
-        result = await runOpencli([
-          'xiaohongshu',
-          'search',
-          data.query as string,
-          '--limit',
-          String(maxNotes),
-          '-f',
-          'json',
-        ]);
-        if (result.success && !result.message && result.data != null) {
-          result.message = JSON.stringify(result.data, null, 2);
-        }
-      }
-      break;
-
-    // ----- Xiaohongshu: note -----
-    case 'opencli_xhs_note':
-      if (!data.noteUrl) {
-        result = { success: false, message: 'Missing noteUrl' };
-        break;
-      }
-      result = await runOpencli([
-        'xiaohongshu',
-        'note',
-        data.noteUrl as string,
-        '-f',
-        'json',
-      ]);
+      result = await runOpencli(mapped.args!);
       if (result.success && !result.message && result.data != null) {
         result.message = JSON.stringify(result.data, null, 2);
       }
       break;
-
-    // ----- Xiaohongshu: user -----
-    case 'opencli_xhs_user':
-      if (!data.userId) {
-        result = { success: false, message: 'Missing userId' };
-        break;
-      }
-      {
-        const maxNotes = (data.maxNotes as number) ?? 20;
-        result = await runOpencli([
-          'xiaohongshu',
-          'user',
-          data.userId as string,
-          '--limit',
-          String(maxNotes),
-          '-f',
-          'json',
-        ]);
-        if (result.success && !result.message && result.data != null) {
-          result.message = JSON.stringify(result.data, null, 2);
-        }
-      }
-      break;
-
-    default:
-      return false;
+    }
   }
 
   writeResult(dataDir, sourceGroup, requestId, result, originalType);
