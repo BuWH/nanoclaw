@@ -1175,6 +1175,13 @@ async function main(): Promise<void> {
               },
             });
             fs.writeFileSync(BOOT_ATTEMPTS_PATH, '0');
+            // Clean up pre-update marker so the next boot doesn't see
+            // savedSha === currentHead and suppress the notification.
+            try {
+              fs.unlinkSync(PRE_UPDATE_HEAD_PATH);
+            } catch {
+              /* may not exist */
+            }
             logger.info(
               { rolledBackTo: knownGood },
               'Boot rollback successful, restarting',
@@ -1460,137 +1467,127 @@ async function main(): Promise<void> {
     if (mainChannel) {
       let msg = '服务已重启 ✅';
       let changelog = '';
+      let codeChanged = false;
 
+      // Read HEAD once and reuse across all strategies.
+      let currentHead = '';
       try {
-        // Strategy A (primary): Compute changelog from pre-update HEAD marker.
-        // The marker is written BEFORE pull, so it survives SIGTERM/crashes.
-        if (fs.existsSync(PRE_UPDATE_HEAD_PATH)) {
-          const savedSha = fs
-            .readFileSync(PRE_UPDATE_HEAD_PATH, 'utf-8')
-            .trim();
-          const currentHead = execSync('git rev-parse HEAD', {
-            cwd: process.cwd(),
-            encoding: 'utf-8',
-            stdio: 'pipe',
-          }).trim();
-
-          logger.info(
-            { savedSha, currentHead, markerPath: PRE_UPDATE_HEAD_PATH },
-            'Found pre-update HEAD marker',
-          );
-
-          // Dedup guard: don't re-announce the same update after a manual restart.
-          let lastAnnounced = '';
-          try {
-            lastAnnounced = fs
-              .readFileSync(LAST_ANNOUNCED_HEAD_PATH, 'utf-8')
-              .trim();
-          } catch {
-            /* file doesn't exist yet */
-          }
-
-          if (savedSha !== currentHead && currentHead !== lastAnnounced) {
-            changelog = computeChangelog(savedSha, currentHead, process.cwd());
-          } else {
-            logger.info(
-              { savedSha, currentHead, lastAnnounced },
-              'Skipping changelog: no change or already announced',
-            );
-          }
-
-          // Clean up marker
-          try {
-            fs.unlinkSync(PRE_UPDATE_HEAD_PATH);
-          } catch {
-            /* ignore */
-          }
-
-          // Record what we announced
-          if (changelog) {
-            try {
-              fs.mkdirSync(path.dirname(LAST_ANNOUNCED_HEAD_PATH), {
-                recursive: true,
-              });
-              fs.writeFileSync(LAST_ANNOUNCED_HEAD_PATH, currentHead, 'utf-8');
-            } catch {
-              /* non-fatal */
-            }
-          }
-        }
-
-        // Strategy B (legacy fallback): Read pre-written changelog file.
-        // Handles the case where an old version wrote the changelog before restart.
-        if (!changelog && fs.existsSync(UPDATE_CHANGELOG_PATH)) {
-          changelog = fs.readFileSync(UPDATE_CHANGELOG_PATH, 'utf-8').trim();
-          logger.info(
-            {
-              changelogPath: UPDATE_CHANGELOG_PATH,
-              changelogLength: changelog.length,
-            },
-            'Read legacy changelog from disk',
-          );
-          try {
-            fs.unlinkSync(UPDATE_CHANGELOG_PATH);
-          } catch {
-            /* ignore */
-          }
-        }
-
-        if (changelog) {
-          msg += '\n\n*更新内容:*\n' + changelog;
-        }
-      } catch (changelogErr) {
-        logger.warn(
-          { err: changelogErr },
-          'Failed to compute update changelog',
-        );
+        currentHead = execSync('git rev-parse HEAD', {
+          cwd: process.cwd(),
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        }).trim();
+      } catch {
+        /* git not available */
       }
 
-      // Detect code changes even without a pre-update marker (e.g. manual
-      // merge + kickstart, or rollback recovery). Compare current HEAD to the
-      // last announced HEAD: if they differ, the code has changed and the user
-      // should be notified.
-      let codeChanged = !!changelog;
-      if (!codeChanged) {
+      // Read last-announced SHA once (may not exist on first boot).
+      let lastAnnounced = '';
+      try {
+        lastAnnounced = fs
+          .readFileSync(LAST_ANNOUNCED_HEAD_PATH, 'utf-8')
+          .trim();
+      } catch {
+        /* first boot — will notify regardless */
+      }
+
+      if (currentHead) {
         try {
-          const currentHead = execSync('git rev-parse --short HEAD', {
-            cwd: process.cwd(),
-            encoding: 'utf-8',
-            stdio: 'pipe',
-          }).trim();
-          let lastAnnounced = '';
+          // Strategy A: Compute changelog from pre-update HEAD marker.
+          // The marker is written BEFORE pull, so it survives SIGTERM/crashes.
+          let savedSha = '';
           try {
-            lastAnnounced = fs
-              .readFileSync(LAST_ANNOUNCED_HEAD_PATH, 'utf-8')
-              .trim()
-              .slice(0, currentHead.length);
+            savedSha = fs.readFileSync(PRE_UPDATE_HEAD_PATH, 'utf-8').trim();
           } catch {
-            /* file doesn't exist yet — first boot, always notify */
-            codeChanged = true;
+            /* marker doesn't exist — not an auto-update restart */
           }
-          if (!codeChanged && currentHead !== lastAnnounced) {
-            codeChanged = true;
+
+          if (savedSha) {
             logger.info(
-              { currentHead, lastAnnounced },
-              'Code changed since last announcement (no marker file)',
+              { savedSha, currentHead, markerPath: PRE_UPDATE_HEAD_PATH },
+              'Found pre-update HEAD marker',
             );
-            // Record so we don't re-announce on next routine restart
+
+            // Clean up marker now that we've read it.
             try {
-              const fullHead = execSync('git rev-parse HEAD', {
-                cwd: process.cwd(),
-                encoding: 'utf-8',
-                stdio: 'pipe',
-              }).trim();
-              fs.mkdirSync(path.dirname(LAST_ANNOUNCED_HEAD_PATH), {
-                recursive: true,
-              });
-              fs.writeFileSync(LAST_ANNOUNCED_HEAD_PATH, fullHead);
+              fs.unlinkSync(PRE_UPDATE_HEAD_PATH);
             } catch {
-              /* best effort */
+              /* ignore */
+            }
+
+            if (savedSha !== currentHead && currentHead !== lastAnnounced) {
+              changelog = computeChangelog(
+                savedSha,
+                currentHead,
+                process.cwd(),
+              );
+            } else {
+              logger.info(
+                { savedSha, currentHead, lastAnnounced },
+                'Skipping changelog: no change or already announced',
+              );
             }
           }
-        } catch {
-          /* git not available, skip detection */
+
+          // Strategy B (legacy): Pre-written changelog file from older versions.
+          if (!changelog) {
+            try {
+              const legacyChangelog = fs
+                .readFileSync(UPDATE_CHANGELOG_PATH, 'utf-8')
+                .trim();
+              if (legacyChangelog) {
+                changelog = legacyChangelog;
+                logger.info(
+                  { changelogLength: changelog.length },
+                  'Read legacy changelog from disk',
+                );
+              }
+            } catch {
+              /* file doesn't exist */
+            }
+            try {
+              fs.unlinkSync(UPDATE_CHANGELOG_PATH);
+            } catch {
+              /* ignore */
+            }
+          }
+
+          if (changelog) {
+            msg += '\n\n*更新内容:*\n' + changelog;
+            codeChanged = true;
+          }
+
+          // Strategy C: Detect code changes without a changelog (manual merge,
+          // rollback recovery, or auto-update where changelog was empty).
+          if (!codeChanged) {
+            if (!lastAnnounced) {
+              // First boot — always notify.
+              codeChanged = true;
+            } else if (currentHead !== lastAnnounced) {
+              codeChanged = true;
+              logger.info(
+                {
+                  currentHead: currentHead.slice(0, 8),
+                  lastAnnounced: lastAnnounced.slice(0, 8),
+                },
+                'Code changed since last announcement (no marker file)',
+              );
+            }
+          }
+        } catch (changelogErr) {
+          logger.warn(
+            { err: changelogErr },
+            'Failed to compute update changelog',
+          );
+        }
+
+        // Record current HEAD so we don't re-announce on next routine restart.
+        if (codeChanged) {
+          try {
+            fs.writeFileSync(LAST_ANNOUNCED_HEAD_PATH, currentHead, 'utf-8');
+          } catch {
+            /* non-fatal */
+          }
         }
       }
 
@@ -1599,7 +1596,7 @@ async function main(): Promise<void> {
           logger.warn({ err }, 'Failed to send startup notification');
         });
       } else {
-        logger.info('Startup notification suppressed (no changelog)');
+        logger.info('Startup notification suppressed (no code change)');
       }
     }
   }
