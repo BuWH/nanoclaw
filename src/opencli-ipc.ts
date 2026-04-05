@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import {
   extractTweetId,
@@ -36,7 +37,9 @@ interface SkillResult {
 }
 
 const SCRIPT_TIMEOUT_MS = 120_000;
-const OPENCLI_BIN = process.env.OPENCLI_BIN || 'opencli';
+const envConfig = readEnvFile(['OPENCLI_BIN']);
+const OPENCLI_BIN =
+  process.env.OPENCLI_BIN || envConfig.OPENCLI_BIN || 'opencli';
 
 // Run an opencli CLI command and parse JSON output
 export async function runOpencli(
