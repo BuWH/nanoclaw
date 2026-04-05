@@ -1,2 +1,3 @@
 npm run build
+npm rebuild better-sqlite3 2>/dev/null
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw
