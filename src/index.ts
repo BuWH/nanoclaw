@@ -1529,29 +1529,6 @@ async function main(): Promise<void> {
             }
           }
 
-          // Strategy B (legacy): Pre-written changelog file from older versions.
-          if (!changelog) {
-            try {
-              const legacyChangelog = fs
-                .readFileSync(UPDATE_CHANGELOG_PATH, 'utf-8')
-                .trim();
-              if (legacyChangelog) {
-                changelog = legacyChangelog;
-                logger.info(
-                  { changelogLength: changelog.length },
-                  'Read legacy changelog from disk',
-                );
-              }
-            } catch {
-              /* file doesn't exist */
-            }
-            try {
-              fs.unlinkSync(UPDATE_CHANGELOG_PATH);
-            } catch {
-              /* ignore */
-            }
-          }
-
           if (changelog) {
             msg += '\n\n*更新内容:*\n' + changelog;
             codeChanged = true;
@@ -1588,6 +1565,32 @@ async function main(): Promise<void> {
           } catch {
             /* non-fatal */
           }
+        }
+      }
+
+      // Strategy B (legacy): Pre-written changelog file from older versions.
+      // Independent of git — only needs filesystem access.
+      if (!changelog) {
+        try {
+          const legacyChangelog = fs
+            .readFileSync(UPDATE_CHANGELOG_PATH, 'utf-8')
+            .trim();
+          if (legacyChangelog) {
+            changelog = legacyChangelog;
+            codeChanged = true;
+            msg += '\n\n*更新内容:*\n' + changelog;
+            logger.info(
+              { changelogLength: changelog.length },
+              'Read legacy changelog from disk',
+            );
+          }
+        } catch {
+          /* file doesn't exist */
+        }
+        try {
+          fs.unlinkSync(UPDATE_CHANGELOG_PATH);
+        } catch {
+          /* ignore */
         }
       }
 
