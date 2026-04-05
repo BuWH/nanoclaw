@@ -1166,7 +1166,7 @@ async function main(): Promise<void> {
           if (knownGood !== currentHead) {
             execSync(`git reset --hard ${knownGood}`, { stdio: 'pipe' });
             const nodeBinDir = path.dirname(process.execPath);
-            execSync('npm run build', {
+            execSync('npm run build && npm rebuild better-sqlite3', {
               stdio: 'pipe',
               timeout: 120000,
               env: {
