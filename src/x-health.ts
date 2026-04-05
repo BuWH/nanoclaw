@@ -12,7 +12,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { logger as rootLogger } from './logger.js';
-import { runScript } from './x-ipc.js';
+import { runScript } from './opencli-ipc.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

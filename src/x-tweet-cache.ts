@@ -47,7 +47,7 @@ interface TweetCache {
 }
 
 // ---------------------------------------------------------------------------
-// Search result types (from search-tweets.ts)
+// Search result types (from search-tweets.ts -- legacy twitter-scraper format)
 // ---------------------------------------------------------------------------
 
 export interface SearchTweet {
@@ -68,7 +68,7 @@ export interface SearchTweet {
 }
 
 // ---------------------------------------------------------------------------
-// Profile result types (from scrape-profile.ts)
+// Profile result types (from scrape-profile.ts -- legacy format)
 // ---------------------------------------------------------------------------
 
 export interface ProfileData {
@@ -88,7 +88,7 @@ export interface ProfileData {
 }
 
 // ---------------------------------------------------------------------------
-// Scrape-tweet result types (from scrape-tweet.ts)
+// Scrape-tweet result types (from scrape-tweet.ts -- legacy format)
 // ---------------------------------------------------------------------------
 
 export interface ScrapedTweetData {
@@ -105,6 +105,41 @@ export interface ScrapedTweetData {
   };
   replies: Array<{ author: string; handle: string; content: string }>;
   quotedTweet?: { author: string; content: string };
+}
+
+// ---------------------------------------------------------------------------
+// OpenCLI result types
+// ---------------------------------------------------------------------------
+
+export interface OpencliSearchTweet {
+  id: string;
+  author: string;
+  text: string;
+  created_at: string;
+  likes: number;
+  views: number;
+  url: string;
+}
+
+export interface OpencliTimelineTweet {
+  id: string;
+  author: string;
+  text: string;
+  likes: number;
+  retweets: number;
+  replies: number;
+  views: number;
+  created_at: string;
+  url: string;
+}
+
+export interface OpencliThreadTweet {
+  id: string;
+  author: string;
+  text: string;
+  likes: number;
+  retweets: number;
+  url: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,4 +321,92 @@ export function formatCachedTweet(entry: TweetCacheEntry): string {
   lines.push('\n[Served from cache]');
 
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// OpenCLI adapter functions (convert opencli JSON output -> TweetCacheEntry)
+// ---------------------------------------------------------------------------
+
+export function cacheTweetsFromOpencliSearch(
+  tweets: readonly OpencliSearchTweet[],
+): void {
+  const now = Date.now();
+  const entries: TweetCacheEntry[] = tweets
+    .filter((t) => t.id)
+    .map((t) => ({
+      id: t.id,
+      author: t.author,
+      handle: `@${t.author}`,
+      content: t.text,
+      timestamp: t.created_at,
+      url: t.url,
+      likes: t.likes ?? 0,
+      retweets: 0,
+      replies: 0,
+      views: t.views ?? 0,
+      cachedAt: now,
+    }));
+
+  if (entries.length > 0) {
+    logger.info(
+      { count: entries.length },
+      'Caching tweets from opencli search results',
+    );
+    cacheTweets(entries);
+  }
+}
+
+export function cacheTweetsFromOpencliTimeline(
+  tweets: readonly OpencliTimelineTweet[],
+): void {
+  const now = Date.now();
+  const entries: TweetCacheEntry[] = tweets
+    .filter((t) => t.id)
+    .map((t) => ({
+      id: t.id,
+      author: t.author,
+      handle: `@${t.author}`,
+      content: t.text,
+      timestamp: t.created_at,
+      url: t.url,
+      likes: t.likes ?? 0,
+      retweets: t.retweets ?? 0,
+      replies: t.replies ?? 0,
+      views: t.views ?? 0,
+      cachedAt: now,
+    }));
+
+  if (entries.length > 0) {
+    logger.info(
+      { count: entries.length },
+      'Caching tweets from opencli timeline results',
+    );
+    cacheTweets(entries);
+  }
+}
+
+export function cacheTweetFromOpencliThread(
+  tweetId: string | null,
+  thread: readonly OpencliThreadTweet[],
+): void {
+  if (!tweetId || thread.length === 0) return;
+
+  const mainTweet = thread[0];
+  const now = Date.now();
+  const entry: TweetCacheEntry = {
+    id: tweetId,
+    author: mainTweet.author,
+    handle: `@${mainTweet.author}`,
+    content: mainTweet.text,
+    timestamp: '',
+    url: mainTweet.url || `https://x.com/i/status/${tweetId}`,
+    likes: mainTweet.likes ?? 0,
+    retweets: mainTweet.retweets ?? 0,
+    replies: 0,
+    views: 0,
+    cachedAt: now,
+  };
+
+  logger.info({ tweetId }, 'Caching tweet from opencli thread');
+  cacheTweets([entry]);
 }

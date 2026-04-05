@@ -642,12 +642,12 @@ Use this when:
   );
 }
 
-// --- X Integration Tools (main group only) ---
+// --- OpenCLI Integration Tools (main group only) ---
 
-const X_RESULTS_DIR = path.join(IPC_DIR, 'x_results');
+const OPENCLI_RESULTS_DIR = path.join(IPC_DIR, 'opencli_results');
 
-async function waitForXResult(requestId: string, maxWait = 60000): Promise<{ success: boolean; message: string }> {
-  const resultFile = path.join(X_RESULTS_DIR, `${requestId}.json`);
+async function waitForOpencliResult(requestId: string, maxWait = 60000): Promise<{ success: boolean; message: string }> {
+  const resultFile = path.join(OPENCLI_RESULTS_DIR, `${requestId}.json`);
   const pollInterval = 1000;
   let elapsed = 0;
 
@@ -669,76 +669,22 @@ async function waitForXResult(requestId: string, maxWait = 60000): Promise<{ suc
 }
 
 if (isMain) {
-  server.tool(
-    'x_scrape_tweet',
-    `Scrape a tweet from X (Twitter). Extracts content, author, metrics (likes, reposts, views), and optionally replies. Main group only.
-Uses browser automation on the host machine to load the tweet page.`,
-    {
-      tweet_url: z.string().describe('The tweet URL (e.g., https://x.com/user/status/123)'),
-      include_replies: z.boolean().default(false).describe('Whether to also scrape replies'),
-      max_replies: z.number().default(10).describe('Maximum number of replies to scrape'),
-    },
-    async (args) => {
-      const requestId = `xscrape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      writeIpcFile(TASKS_DIR, {
-        type: 'x_scrape_tweet',
-        requestId,
-        tweetUrl: args.tweet_url,
-        includeReplies: args.include_replies,
-        maxReplies: args.max_replies,
-        groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-
-      const result = await waitForXResult(requestId, 90000);
-      return {
-        content: [{ type: 'text' as const, text: result.message }],
-        isError: !result.success,
-      };
-    },
-  );
+  // --- Twitter tools ---
 
   server.tool(
-    'x_scrape_profile',
-    `Scrape a user profile and recent tweets from X (Twitter). Extracts bio, follower counts, and recent timeline posts. Main group only.
-Uses browser automation on the host machine.`,
-    {
-      username: z.string().describe('X username (with or without @)'),
-      max_tweets: z.number().default(10).describe('Maximum number of tweets to scrape from timeline'),
-    },
-    async (args) => {
-      const requestId = `xprofile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      writeIpcFile(TASKS_DIR, {
-        type: 'x_scrape_profile',
-        requestId,
-        username: args.username,
-        maxTweets: args.max_tweets,
-        groupFolder,
-        timestamp: new Date().toISOString(),
-      });
-
-      const result = await waitForXResult(requestId, 90000);
-      return {
-        content: [{ type: 'text' as const, text: result.message }],
-        isError: !result.success,
-      };
-    },
-  );
-
-  server.tool(
-    'x_search_tweets',
+    'opencli_twitter_search',
     `Search tweets on X (Twitter). Returns tweets matching a search query. Main group only.
 Supports two modes: "top" for popular/relevant tweets, "latest" for chronological.
-Uses the twitter-scraper API on the host machine.`,
+Uses opencli on the host machine.`,
     {
       query: z.string().describe('Search query (e.g., "AI", "Claude Code", "from:elonmusk")'),
       max_tweets: z.number().default(20).describe('Maximum number of tweets to return'),
       search_mode: z.enum(['top', 'latest']).default('top').describe('Search mode: "top" for popular, "latest" for chronological'),
     },
     async (args) => {
-      const requestId = `xsearch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const requestId = `opencli-tsearch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       writeIpcFile(TASKS_DIR, {
-        type: 'x_search_tweets',
+        type: 'opencli_twitter_search',
         requestId,
         query: args.query,
         maxTweets: args.max_tweets,
@@ -747,7 +693,73 @@ Uses the twitter-scraper API on the host machine.`,
         timestamp: new Date().toISOString(),
       });
 
-      const result = await waitForXResult(requestId, 120000);
+      const result = await waitForOpencliResult(requestId, 120000);
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+        isError: !result.success,
+      };
+    },
+  );
+
+  server.tool(
+    'opencli_twitter_timeline',
+    `Fetch your Twitter/X timeline. Returns tweets from your home feed. Main group only.
+Supports two types: "for-you" (algorithmic) and "following" (chronological).
+Uses opencli on the host machine.`,
+    {
+      timeline_type: z.enum(['for-you', 'following']).default('for-you').describe('Timeline type'),
+      max_tweets: z.number().default(20).describe('Maximum number of tweets to return'),
+    },
+    async (args) => {
+      const requestId = `opencli-ttl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      writeIpcFile(TASKS_DIR, {
+        type: 'opencli_twitter_timeline',
+        requestId,
+        timelineType: args.timeline_type,
+        maxTweets: args.max_tweets,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+      const result = await waitForOpencliResult(requestId, 120000);
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+        isError: !result.success,
+      };
+    },
+  );
+
+  // --- Generic opencli tool ---
+
+  server.tool(
+    'opencli_run',
+    `Run any opencli command on the host machine. Returns JSON output. Main group only.
+Use this for any operation not covered by the dedicated tools above. Examples:
+- Twitter scrape: opencli twitter thread <tweet-id> --limit 10
+- Twitter post: opencli twitter post "Hello"
+- Twitter like: opencli twitter like <url>
+- Xiaohongshu: opencli xiaohongshu search "query" --limit 20
+- Xiaohongshu note (MUST use full URL with xsec_token): opencli xiaohongshu note "<url>"
+- Hacker News: opencli hackernews top --limit 10
+- Browser: opencli operate open "https://example.com"
+The -f json flag is appended automatically for structured output.`,
+    {
+      command: z.string().describe('The opencli subcommand (e.g., "hackernews", "reddit", "youtube", "weibo", "operate")'),
+      args: z.array(z.string()).default([]).describe('Arguments for the command (e.g., ["top", "--limit", "10"])'),
+      timeout_ms: z.number().default(120000).describe('Timeout in milliseconds'),
+    },
+    async (toolArgs) => {
+      const requestId = `opencli-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      writeIpcFile(TASKS_DIR, {
+        type: 'opencli_run',
+        requestId,
+        command: toolArgs.command,
+        args: toolArgs.args,
+        timeoutMs: toolArgs.timeout_ms,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      });
+
+      const result = await waitForOpencliResult(requestId, Math.min(toolArgs.timeout_ms + 10000, 300000));
       return {
         content: [{ type: 'text' as const, text: result.message }],
         isError: !result.success,
