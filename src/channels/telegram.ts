@@ -177,6 +177,7 @@ export class TelegramChannel implements Channel {
   private pollingWatchdog: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
   private lastUpdateTime = Date.now();
+  private lastWatchdogTick = Date.now();
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -801,8 +802,31 @@ export class TelegramChannel implements Channel {
             `  Send /chatid to the bot to get a chat's registration ID\n`,
           );
 
-          // Start watchdog to detect silent polling death
+          // Start watchdog to detect silent polling death.
+          //
+          // Sleep/wake detection: macOS sleep freezes timers. When the
+          // system wakes, the 30s setInterval fires but the actual
+          // wall-clock gap is minutes/hours. The Telegram long-poll
+          // HTTP connection is dead at this point but grammY's
+          // bot.isRunning() still returns true (it checks the object
+          // state, not the socket). We detect the time jump and
+          // exit so launchd restarts with a fresh connection.
           this.pollingWatchdog = setInterval(() => {
+            const now = Date.now();
+            const tickElapsed = now - this.lastWatchdogTick;
+            this.lastWatchdogTick = now;
+
+            // Watchdog runs every 30s. If >2 min elapsed between
+            // ticks, the system was asleep.
+            const SLEEP_THRESHOLD_MS = 2 * 60 * 1000;
+            if (tickElapsed > SLEEP_THRESHOLD_MS) {
+              logger.warn(
+                { sleepDurationMs: tickElapsed, tickElapsed },
+                'System sleep detected (wall-clock jump), forcing restart to reconnect Telegram',
+              );
+              process.exit(1);
+            }
+
             if (this.bot && !this.bot.isRunning() && !this.stopping) {
               logger.fatal(
                 'Telegram polling stopped unexpectedly, exiting for restart',
